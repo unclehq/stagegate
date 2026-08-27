@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(codex --version)",
+      "Bash(codex login *)"
+    ]
+  }
+}

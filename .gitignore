@@ -1,0 +1,8 @@
+.workflow
+
+# Local agent workflow state
+.workflow/state
+.workflow/approvals/
+.workflow/logs/
+.workflow/change.diff
+.workflow/change-stat.txt

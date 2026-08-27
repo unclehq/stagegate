@@ -1,0 +1,100 @@
+# Quick start
+
+This guide gets you from zero to a running workflow in a few minutes.
+
+## Prerequisites
+
+- `claude` CLI (or set `WORKFLOW_AGENT_CMD` to a compatible alternative)
+- `codex` CLI (or set `WORKFLOW_REVIEWER_CMD` to a compatible alternative)
+- `jq`
+- `bash` 3.2+
+
+## 1. New application
+
+Write a project brief in `REQUIREMENTS.md` under `# Project brief`, then run:
+
+```sh
+./scripts/stagegate.sh
+```
+
+The driver stops at each gate and asks you to approve the produced document.
+Type the requested word (`APPROVE` or `ACKNOWLEDGE`) to continue.
+
+### Start from a GitHub issue
+
+```sh
+./scripts/from-issue.sh https://github.com/owner/repo/issues/123 --new
+./scripts/stagegate.sh
+```
+
+## 2. Change request in an existing repo
+
+Copy the workflow files into the target repository:
+
+```sh
+TEMPLATE=/path/to/stagegate
+cp -R "$TEMPLATE/prompts" .
+cp -R "$TEMPLATE/scripts" .
+cp "$TEMPLATE/CLAUDE.md" .
+cp "$TEMPLATE/CHANGE_REQUEST.md" .
+chmod +x scripts/*.sh
+```
+
+Fill in `CHANGE_REQUEST.md`, commit or stash unrelated work, then run:
+
+```sh
+./scripts/change-workflow.sh
+```
+
+For a small, focused change, use the small track:
+
+```sh
+WORKFLOW_TRACK=small ./scripts/change-workflow.sh
+```
+
+### Start from a GitHub issue
+
+```sh
+./scripts/from-issue.sh https://github.com/owner/repo/issues/123 --change
+./scripts/change-workflow.sh
+```
+
+## 3. What happens next
+
+The workflow runs stages and pauses at gates:
+
+| Pipeline | Stages |
+|---|---|
+| New app | Requirements → Plan → Adversarial review → Updated plan → Implementation → Manual checklist → Execution → Final audit |
+| Change request | Analyze → Plan → Adversarial review → Updated plan → Implement → Checklist → Execution → Final audit |
+
+At each gate, open the listed file, read it, and type the requested word.
+
+## 4. Reading the result
+
+When the driver reaches `COMPLETE`, read in this order:
+
+1. `FINAL_AUDIT.md` — ends with `READY`, `READY WITH NON-BLOCKING ISSUES`, or
+   `NOT READY`.
+2. `VERIFICATION_REPORT.md` — what was actually run.
+3. Test report (`AUTOMATED_TEST_REPORT.md` or `CHANGE_TEST_REPORT.md`).
+4. The source diff or implementation notes.
+
+## 5. Resume or reset
+
+The workflow is stateful:
+
+```sh
+# Resume after an interruption
+./scripts/stagegate.sh
+
+# Restart a specific stage
+echo REQUIREMENTS > .workflow/state
+./scripts/stagegate.sh
+
+# Full reset
+rm -rf .workflow
+```
+
+See [`README.md`](README.md) for full configuration options and
+[`CONTRIBUTING.md`](CONTRIBUTING.md) if you want to improve the project.
