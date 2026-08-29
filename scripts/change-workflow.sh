@@ -50,17 +50,22 @@ mkdir -p "$APPROVAL_DIR" "$LOG_DIR"
 # adversarial review, the checklist, and the final audit run on both tracks.
 TRACK="${WORKFLOW_TRACK:-full}"
 
-# Stage models. Opus is roughly 5x Sonnet, so it is reserved for the two
-# stages where a wrong answer is expensive to undo: the plan everything else
-# hangs off, and the implementation itself. BASELINE and EXECUTE_CHECKLIST
-# carry the largest contexts in the pipeline (whole-repo reads, full test
-# output) and are mostly read-and-record work, so they pay Sonnet rates.
-MODEL_BASELINE="${WORKFLOW_MODEL_BASELINE:-sonnet}"
-MODEL_CHANGE_SPEC="${WORKFLOW_MODEL_CHANGE_SPEC:-sonnet}"
+# Stage models. Opus is reserved for the two stages where a wrong answer is
+# expensive to undo: the plan everything else hangs off, and the implementation
+# itself. The stages that were on Sonnet now run on kimi, which is cheaper
+# again: BASELINE and EXECUTE_CHECKLIST carry the largest contexts in the
+# pipeline (whole-repo reads, full test output) and are mostly read-and-record
+# work, and CHANGE_SPEC/UPDATED_PLAN transcribe decisions already made.
+#
+# `kimi` routes through scripts/agent-kimi.sh; `kimi:<alias>` picks a specific
+# model from ~/.kimi-code/config.toml. Set any of these back to `sonnet` to
+# return that one stage to Claude.
+MODEL_BASELINE="${WORKFLOW_MODEL_BASELINE:-kimi}"
+MODEL_CHANGE_SPEC="${WORKFLOW_MODEL_CHANGE_SPEC:-kimi}"
 MODEL_CHANGE_PLAN="${WORKFLOW_MODEL_CHANGE_PLAN:-opus}"
-MODEL_UPDATED_PLAN="${WORKFLOW_MODEL_UPDATED_PLAN:-sonnet}"
+MODEL_UPDATED_PLAN="${WORKFLOW_MODEL_UPDATED_PLAN:-kimi}"
 MODEL_IMPLEMENT="${WORKFLOW_MODEL_IMPLEMENT:-opus}"
-MODEL_EXECUTE="${WORKFLOW_MODEL_EXECUTE:-sonnet}"
+MODEL_EXECUTE="${WORKFLOW_MODEL_EXECUTE:-kimi}"
 MODEL_SMALL="${WORKFLOW_MODEL_SMALL:-opus}"
 
 EFFORT_CHANGE_SPEC="${WORKFLOW_EFFORT_CHANGE_SPEC:-medium}"
@@ -101,7 +106,7 @@ PARALLEL_CHECKLIST="${WORKFLOW_PARALLEL_CHECKLIST:-1}"
 # flags as `claude -p` (model, effort, max-turns, output-format stream-json,
 # allowedTools, stdin prompt). The reviewer CLI must accept the same flags as
 # `codex exec` (ephemeral, sandbox read-only, model, output-last-message).
-AGENT_CMD="${WORKFLOW_AGENT_CMD:-claude}"
+AGENT_CMD="${WORKFLOW_AGENT_CMD:-$ROOT/scripts/agent-kimi.sh}"
 REVIEWER_CMD="${WORKFLOW_REVIEWER_CMD:-codex}"
 
 # Close the originating GitHub issue on reaching COMPLETE with a READY verdict.

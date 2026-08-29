@@ -48,7 +48,7 @@ WORKFLOW_SPECULATE="${WORKFLOW_SPECULATE:-1}"
 # flags as `claude -p` (model, effort, max-turns, output-format stream-json,
 # allowedTools, stdin prompt). The reviewer CLI must accept the same flags as
 # `codex exec` (ephemeral, sandbox read-only, model, output-last-message).
-AGENT_CMD="${WORKFLOW_AGENT_CMD:-claude}"
+AGENT_CMD="${WORKFLOW_AGENT_CMD:-$ROOT/scripts/agent-kimi.sh}"
 REVIEWER_CMD="${WORKFLOW_REVIEWER_CMD:-codex}"
 
 # Per-stage model and reasoning effort, keyed by log name. Planning and
@@ -83,7 +83,7 @@ stage_setting() {
 stage_model() {
     local fallback="$DEFAULT_MODEL"
     case "$1" in
-        requirements|execute-checklist) fallback="sonnet" ;;
+        requirements|execute-checklist) fallback="kimi" ;;
     esac
     stage_setting MODEL "$1" "$fallback"
 }

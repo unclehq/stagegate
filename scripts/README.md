@@ -192,8 +192,29 @@ under "Configuration". The two that decide which external CLI is spawned:
 
 | Variable | Default | Used by |
 |---|---|---|
-| `WORKFLOW_AGENT_CMD` | `claude` | `stagegate.sh`, `change-workflow.sh` |
+| `WORKFLOW_AGENT_CMD` | `scripts/agent-kimi.sh` | `stagegate.sh`, `change-workflow.sh` |
 | `WORKFLOW_REVIEWER_CMD` | `codex` | both drivers and both `codex-*` helpers |
 
 Setting both to `false` is a convenient way to exercise the argument-handling
 paths without spawning a real agent.
+
+### agent-kimi.sh
+
+The default agent command is a shim, not a CLI. The drivers spawn one agent
+command for every stage and pick the tier with `--model`, so pointing
+`WORKFLOW_AGENT_CMD` straight at `kimi` would move the opus stages too.
+`agent-kimi.sh` dispatches on the model instead: `kimi` and `kimi:<alias>` run
+on kimi, every other value is passed through to `claude` unchanged.
+
+kimi is not flag-compatible with `claude -p`, so the kimi path also moves the
+prompt from stdin to `-p`, drops the claude-only flags, and rewrites kimi's
+event stream into the schema the drivers' `format_claude_stream` renders.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `WORKFLOW_KIMI_MODEL` | `moonshot-ai/kimi-k2.7-code-highspeed` | Model for a bare `kimi` tier |
+| `WORKFLOW_KIMI_CMD` | `kimi` | kimi binary |
+| `WORKFLOW_CLAUDE_CMD` | `claude` | Binary for the passthrough branch |
+
+Set `WORKFLOW_AGENT_CMD=claude` to take every stage back to Claude, or set an
+individual stage back with e.g. `WORKFLOW_MODEL_BASELINE=sonnet`.
