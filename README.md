@@ -127,9 +127,31 @@ issue number or URL:
 ./scripts/from-issue.sh https://github.com/owner/repo/issues/52638 --new
 ```
 
-`--change` writes `CHANGE_REQUEST.md` for `./scripts/change-workflow.sh`.
+`--change` writes `CHANGE_REQUEST.md`, then prints it for review and asks you to
+type `RUN` exactly. Typing anything else — or sending EOF — leaves
+`CHANGE_REQUEST.md` on disk, starts nothing, and prints the command to run
+later. That prompt is the human editing window: edit `CHANGE_REQUEST.md` in
+another terminal before answering it.
+
+Confirming runs `./scripts/change-workflow.sh` in the same terminal. When that
+run reaches `COMPLETE` and its `FINAL_AUDIT.md` verdict is `READY` or `READY
+WITH NON-BLOCKING ISSUES`, the originating issue is closed with a comment
+pointing at the audit. A `NOT READY` or unparseable verdict, a run that stops at
+a gate, a failed driver, or a fetch that fell back to unauthenticated `curl` all
+leave the issue open with a message saying why. Closing requires an
+authenticated `gh`.
+
+The prompt blocks even when stdin is a pipe — a non-interactive caller of
+`--change` waits for the word rather than being auto-declined.
+
+`--change` also binds the checkout to one issue in `.workflow/origin`. Seeding a
+different issue while a run is in flight is refused rather than overwriting the
+first issue's `CHANGE_REQUEST.md`; finish or reset that run first. Only one
+`change-workflow.sh` may run per checkout at a time — a second one refuses to
+start and names the process holding `.workflow/lock`.
+
 `--new` writes the project brief to `REQUIREMENTS.md` for
-`./scripts/stagegate.sh`.
+`./scripts/stagegate.sh`. It is unchanged: no prompt, no auto-run, no close.
 
 Both drivers are resumable state machines. Interrupt them and re-run the same
 command — they pick up from `.workflow/state`.

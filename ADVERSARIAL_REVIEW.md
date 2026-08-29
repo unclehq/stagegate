@@ -1,122 +1,109 @@
-## AR-001: `workflow.sh --help` remains side-effecting
+## AR-001: Stale workflow state can close the wrong issue
+
+- Severity: Critical
+- Affected behavior: B-04 and B-06
+- Affected invariant: I-08
+- Affected component: `scripts/from-issue.sh` dispatch and `scripts/change-workflow.sh` state machine
+- Failure scenario: Issue B overwrites `CHANGE_REQUEST.md` while `.workflow/state` remains at `IMPLEMENT`, `EXECUTE_CHECKLIST`, or `FINAL_AUDIT` for issue A; the resumed workflow audits A’s artifacts, labels the verdict with B’s new run ID, and closes issue B.
+- Evidence: `from-issue.sh:158-205` unconditionally overwrites the request, while `change-workflow.sh:507-669` resumes shared state and only reads `CHANGE_REQUEST.md` in `ANALYZE`; CHANGE_PLAN §22 acknowledges this exact risk but accepts a warning as mitigation.
+- Why current tests may miss it: M-09 only checks that a warning appears and never verifies that confirmation is blocked or that the wrong issue cannot close.
+- Recommended correction: Bind workflow state to the originating repository, issue, and approved request hash; refuse continuation on any mismatch rather than warning.
+- Proposed verification: Seed issue A, advance to every resumable state, then seed issue B and prove the driver cannot run or close either issue until state ownership is resolved.
+- Blocks implementation: Yes
+
+## AR-002: A stale audit can be relabeled as current and authorize closure
+
+- Severity: Critical
+- Affected behavior: B-04
+- Affected invariant: I-08
+- Affected component: `run_codex`, `FINAL_AUDIT`, and `.workflow/audit-verdict`
+- Failure scenario: An old `FINAL_AUDIT.md` says `READY`; the reviewer command exits successfully without replacing it; `require_file` accepts the stale file, and the new code writes the current run ID beside its verdict and closes the current issue.
+- Evidence: `change-workflow.sh:393-420` does not remove or freshness-check the output before `run_codex`, `require_file` at lines 116-120 checks only non-emptiness, while the background equivalent explicitly removes its output at line 443; CHANGE_PLAN §1 writes the run ID only after this unchecked read.
+- Why current tests may miss it: The classifier fixtures test file contents, not whether the audit was produced by the current reviewer invocation.
+- Recommended correction: Write the audit to a fresh temporary path, require successful production, then atomically publish it and bind the signal to both its hash and the workflow-generation identity.
+- Proposed verification: Precreate a `READY` audit, run a reviewer stub that exits 0 without writing output, and assert a hard failure with no verdict signal and no GitHub call.
+- Blocks implementation: Yes
+
+## AR-003: Concurrent runs can attach one issue’s verdict to another run ID
 
 - Severity: High
-- Affected behavior: BH-13 / AC-06
-- Affected invariant: Spec §4 early-exit/no-side-effect contract, omitted from IV-07 and IV-08
-- Affected component: `scripts/workflow.sh`
-- Failure scenario: Running `workflow.sh --help` in a clean repository creates `.workflow/approvals` before printing help.
-- Evidence: `scripts/workflow.sh:7` executes `mkdir -p` before dispatch at line 37; CHANGE_PLAN §5 explicitly preserves this ordering despite CHANGE_SPEC §§4 and 9 requiring help handling before side effects.
-- Why current tests may miss it: T-07 checks only output and status, while T-13 uses `git status`, which cannot see the gitignored `.workflow` directory.
-- Recommended correction: Parse help immediately after `cd "$ROOT"` and before `mkdir -p`, or explicitly narrow the specification and acceptance criteria.
-- Proposed verification: In a clean fixture, run every help path and assert `test ! -e .workflow` afterward.
+- Affected behavior: B-04 and B-05
+- Affected invariant: I-08
+- Affected component: Shared `.workflow` state, `FINAL_AUDIT.md`, logs, and verdict signal
+- Failure scenario: Two confirmed invocations run `FINAL_AUDIT` concurrently; one overwrites `FINAL_AUDIT.md` between the other invocation’s reviewer return and classification, causing the latter to record its own run ID with the other issue’s verdict and close incorrectly.
+- Evidence: `change-workflow.sh:30-37` and 663-669 use fixed shared paths; CHANGE_PLAN §11 claims concurrency can cause only missed closes, but the run ID identifies the classifier process, not the producer or subject of `FINAL_AUDIT.md`.
+- Why current tests may miss it: No planned check overlaps two reviewer invocations, and single-process classifier fixtures cannot expose shared-file races.
+- Recommended correction: Serialize the entire workflow with an atomic lock or isolate every run’s artifacts and state under a unique directory.
+- Proposed verification: Use two coordinated reviewer stubs that interleave output writes and prove that neither invocation can consume or close from the other’s audit.
 - Blocks implementation: Yes
 
-## AR-002: The uniform unknown-argument contract is not implemented
+## AR-004: Normal pause and resume loses issue-close provenance
 
 - Severity: High
-- Affected behavior: Spec §4 unknown-argument handling, BH-15, BH-16
-- Affected invariant: Unknown arguments must produce usage on stderr and exit non-zero
-- Affected component: `scripts/from-issue.sh`, `scripts/workflow.sh`
-- Failure scenario: `from-issue.sh 123 --bogus` and `workflow.sh bogus` print usage to stdout, contradicting the promised all-six-scripts stderr contract.
-- Evidence: `scripts/from-issue.sh:39` and `scripts/workflow.sh:75-84` use stdout; the plan leaves both unchanged and records the `workflow.sh` conflict as unresolved Q-1.
-- Why current tests may miss it: T-09 expects the conflicting stdout behavior, while T-10 never exercises an unknown argument to `from-issue.sh`.
-- Recommended correction: Resolve whether uniform stderr behavior or backward compatibility governs, then update the spec, behavior classifications, plan, and tests consistently.
-- Proposed verification: Capture stdout and stderr separately for an unknown argument on all six scripts and assert exact status and stream placement.
+- Affected behavior: B-02, B-03, B-04, and documented resumability
+- Affected invariant: I-07 and I-08
+- Affected component: `human_gate`, `from-issue.sh`, and run-ID lifecycle
+- Failure scenario: A user declines an internal gate, causing the child driver to exit 0; resuming with `change-workflow.sh` has no parent close step and records run ID `-`, while resuming with `from-issue.sh` overwrites the human-edited request and creates a new identity over old state.
+- Evidence: `human_gate` exits the driver at `change-workflow.sh:223-225`; README:189-190 promises rerun-based resumption; CHANGE_PLAN persists the ID only when `FINAL_AUDIT` runs and provides no durable originating-issue context before then.
+- Why current tests may miss it: M-06 stops after confirming no immediate close and never resumes through completion or checks preservation of edited `CHANGE_REQUEST.md`.
+- Recommended correction: Persist origin and workflow-generation metadata before launch and provide a resume path that neither refetches nor rewrites the request.
+- Proposed verification: Pause at each human gate, terminate the wrapper, resume using the documented command, and prove the original issue closes exactly once without changing the seeded request.
 - Blocks implementation: Yes
 
-## AR-003: The `workflow.sh` no-argument relaxation lacks authorization
+## AR-005: Verdict parsing can turn malformed audit prose into READY
 
 - Severity: High
-- Affected behavior: BH-13 / AC-06
-- Affected invariant: IV-03
-- Affected component: `scripts/workflow.sh`
-- Failure scenario: A caller using no arguments as an invalid-invocation check currently receives exit 1 but would begin receiving exit 0.
-- Evidence: BASELINE_REPORT B-02 marks the current result “Must preserve: Yes”; CHANGE_REQUEST.md requests help but does not request successful no-argument invocation; CHANGE_SPEC §13 says explicit approval is required, while CHANGE_PLAN §8 asserts approval without recording evidence.
-- Why current tests may miss it: T-07 proves the newly selected behavior rather than detecting the backward-compatibility break.
-- Recommended correction: Keep no-argument invocation at exit 1 and add only `-h`/`--help`, unless the approval authority explicitly accepts the relaxation.
-- Proposed verification: Assert no arguments exit 1, explicit help exits 0, and both print the intended usage text.
+- Affected behavior: B-04 and B-05
+- Affected invariant: I-08
+- Affected component: `scripts/lib/audit-verdict.sh`
+- Failure scenario: An audit concludes `NOT READY` but emits a trailing footer such as “rerun until READY”; the last-phrase algorithm classifies `READY` and closes the issue.
+- Evidence: CHANGE_PLAN §1 searches the last line containing a phrase anywhere, although `prompts/change/final-audit.md:54-58` defines the verdict as an exact conclusion line.
+- Why current tests may miss it: The proposed fixtures cover verdict phrases inside earlier findings, but not text after the conclusion or a verdict phrase embedded in trailing prose.
+- Recommended correction: Accept only the final nonblank line, normalized according to one explicitly documented format, and require an exact match to one allowed verdict.
+- Proposed verification: Add fixtures for trailing prose, headings, bold text, multiple conclusion lines, CRLF input, and text after `NOT READY`; every malformed form must return `UNKNOWN`.
 - Blocks implementation: Yes
 
-## AR-004: The syntax-check command checks only one script
+## AR-006: The non-TTY path contradicts the approved specification
+
+- Severity: High
+- Affected behavior: B-01 and B-02
+- Affected invariant: I-07
+- Affected component: `confirm_and_run_workflow`
+- Failure scenario: A scripted invocation with piped stdin silently seeds and exits 0 without prompting or running the workflow, despite the specification deliberately defining the new prompt as a compatibility break.
+- Evidence: CHANGE_SPEC §8 says non-interactive callers will hit the prompt and block; acceptance criterion 1 requires seed → prompt → run, while CHANGE_PLAN §10 and M-03 replace this with an immediate no-TTY decline.
+- Why current tests may miss it: M-03 asserts the plan’s divergent behavior rather than the specification’s acceptance criterion.
+- Recommended correction: Implement the approved behavior or revise and reapprove the specification before implementation; do not silently reinterpret lack of a TTY as human rejection.
+- Proposed verification: Exercise TTY, EOF, wrong-word, and piped-input cases against one approved behavior table with explicit output and exit-code expectations.
+- Blocks implementation: Yes
+
+## AR-007: The close decision has no executable end-to-end test
+
+- Severity: High
+- Affected behavior: B-03 through B-07
+- Affected invariant: I-05, I-08, and I-09
+- Affected component: `close_issue_if_ready` and orchestration tests
+- Failure scenario: Argument order, run-ID parsing, status handling, auth fallback, or close gating is wrong while all classifier tests and `bash -n` checks still pass, allowing an unintended live close.
+- Evidence: CHANGE_PLAN §16 automates only the pure classifier; M-05 edits a reviewer-owned artifact and then reruns the stage that overwrites it without a `from-issue.sh` parent, while M-07 requires timing-dependent PATH/auth mutation during one long invocation.
+- Why current tests may miss it: None of the proposed automated tests executes the code path containing the irreversible `gh issue close` call.
+- Recommended correction: Add hermetic shell integration tests using temporary checkout state plus stubbed `gh` and workflow commands; reserve live GitHub verification for one disposable issue.
+- Proposed verification: Assert the complete command transcript and exit status for READY, NOT_READY, UNKNOWN, stale/mismatched ID, missing signal, driver failures, auth loss, close failure, decline, and `--new`.
+- Blocks implementation: Yes
+
+## AR-008: The prescribed `if !` pattern can erase the driver’s failure status
 
 - Severity: Medium
-- Affected behavior: T-11
-- Affected invariant: IV-06
-- Affected component: All `scripts/*.sh` files
-- Failure scenario: A syntax error in any script other than the first glob expansion is not parsed by `bash -n scripts/*.sh`.
-- Evidence: Bash treats the first expanded filename as the script and the remaining filenames as positional arguments; CHANGE_PLAN T-11 incorrectly claims this verifies all six scripts.
-- Why current tests may miss it: The command can exit 0 while five scripts were never syntax-checked.
-- Recommended correction: Loop over the files and run `bash -n "$file"` independently, failing on the first non-zero result.
-- Proposed verification: Introduce a syntax error into a non-first temporary fixture and demonstrate that the corrected loop fails.
+- Affected behavior: B-06
+- Affected invariant: I-08
+- Affected component: `confirm_and_run_workflow`
+- Failure scenario: Generated code captures `$?` inside `if ! change-workflow.sh; then`; because `!` inverts the status, it records zero and reports success after a failed driver.
+- Evidence: Both scripts use `set -euo pipefail` at line 2, and CHANGE_PLAN §20 explicitly prescribes driver invocation via `if ! …; then` without specifying safe status capture.
+- Why current tests may miss it: No planned automated test makes the driver return a distinctive nonzero status and checks propagation.
+- Recommended correction: Capture status using `status=0; command || status=$?`, then branch on and return that stored value.
+- Proposed verification: Run against stubs returning 1, 7, and 130; assert no close attempt and exact status propagation.
 - Blocks implementation: No
 
-## AR-005: Inspecting only `$1` accepts invalid trailing arguments
-
-- Severity: Medium
-- Affected behavior: BH-01 through BH-15
-- Affected invariant: Spec §4 rejection of any unrecognized flag or argument
-- Affected component: All proposed argument guards
-- Failure scenario: `stagegate.sh --help --bogus`, `change-workflow.sh --version extra`, and `workflow.sh status extra` succeed while silently ignoring invalid arguments.
-- Evidence: CHANGE_PLAN §1 fixes the guard to `$1` only, and §9 explicitly accepts ignored trailing arguments despite the specification’s broader wording.
-- Why current tests may miss it: T-01 through T-10 exercise only single-argument forms.
-- Recommended correction: Define accepted arity explicitly and validate `$#`; if trailing arguments are intentionally ignored, narrow the specification and classify existing command-plus-extra behavior as PRESERVE.
-- Proposed verification: Test recognized commands and flags with one and multiple trailing arguments, including `--help --bogus`.
-- Blocks implementation: Yes
-
-## AR-006: Preserved zero-argument behavior is never verified
-
-- Severity: Medium
-- Affected behavior: BH-04, BH-08, BH-10, BH-12 / AC-09
-- Affected invariant: Existing zero-argument execution must remain unchanged
-- Affected component: Both drivers and both `codex-*` helpers
-- Failure scenario: A copied guard accidentally routes the empty case to usage or exits non-zero, yet every planned help, version, and unknown-argument check behaves correctly.
-- Evidence: The change-impact table cites T-13 for driver preservation, but T-13 runs T-01 through T-11 and none executes either driver or helper with zero arguments.
-- Why current tests may miss it: Filesystem cleanliness after flag invocations does not exercise the preserved fall-through path.
-- Recommended correction: Compare pre-change and post-change zero-argument executions in identical isolated fixtures with external commands stubbed.
-- Proposed verification: Record exit status, stdout, stderr, invoked stub arguments, and filesystem changes for each zero-argument entry point before and after the change.
-- Blocks implementation: Yes
-
-## AR-007: The containment oracle can conceal `.workflow` mutations
-
-- Severity: Medium
-- Affected behavior: T-13 and MC-06
-- Affected invariant: IV-07 and IV-08 no-side-effect guarantees
-- Affected component: Verification environment
-- Failure scenario: A `cp -R` fixture carries the repository’s existing `.workflow` directory, and a broken help guard mutates it without affecting `git status --porcelain`.
-- Evidence: BASELINE_REPORT §11 records an existing `.workflow`; CHANGE_PLAN §11 permits `cp -R`; `.gitignore:1` ignores the entire directory.
-- Why current tests may miss it: Both pre-existing directories and ignored-file mutations defeat the proposed creation and Git-status signals.
-- Recommended correction: Use a clean `git worktree` or archive fixture, assert `.workflow` is absent before each invocation, and snapshot the filesystem directly rather than through Git.
-- Proposed verification: Compare `find .workflow` output or assert complete absence before and after each help, version, and unknown-argument command.
-- Blocks implementation: Yes
-
-## AR-008: Usage tests can pass copy-pasted or incorrect help
-
-- Severity: Medium
-- Affected behavior: AC-01, AC-03, AC-05, AC-08
-- Affected invariant: Help must name the correct script and accepted arguments
-- Affected component: Five new `usage()` functions and `scripts/README.md`
-- Failure scenario: `codex-create-checklist.sh --help` prints the copied `codex-review-plan.sh` usage and still satisfies T-05’s generic “usage text” expectation.
-- Evidence: The plan uses repeated inline guards, T-05 does not specify content assertions, T-06 omits `codex-create-checklist.sh --bogus`, and T-12 is only a non-empty-file check plus subjective read-through.
-- Why current tests may miss it: Exit status and non-empty output do not prove the script name, synopsis, supported flags, stream, or documentation agree.
-- Recommended correction: Define exact or pattern-based assertions for every synopsis and add unknown-argument coverage for both helpers.
-- Proposed verification: Assert each help output contains its own basename and exact accepted syntax, rejects another script’s syntax, and matches its README entry.
-- Blocks implementation: No
-
-## AR-009: Byte-identical regression checks have no reproducible baseline
-
-- Severity: Medium
-- Affected behavior: BH-14, BH-15, BH-16
-- Affected invariant: Preserved command output must remain byte-identical
-- Affected component: T-08, T-09, T-10
-- Failure scenario: Whitespace, blank lines, or stream placement changes while a reviewer compares only against the prose summary in BASELINE_REPORT §9.
-- Evidence: The baseline records summarized results but no captured stdout/stderr fixtures or hashes; the plan nevertheless requires byte comparison against that section.
-- Why current tests may miss it: A prose description cannot serve as a byte-level comparison operand.
-- Recommended correction: Capture pre-change stdout, stderr, and exit status from controlled fixtures, then run the modified scripts against identical fixtures and compare files with `cmp`.
-- Proposed verification: Produce separate golden captures for `workflow.sh status`, unknown workflow commands, and all preserved `from-issue.sh` help forms.
-- Blocks implementation: No
-
-- Blocking findings: AR-001, AR-002, AR-003, AR-005, AR-006, and AR-007.
-- Regression risks: Side-effecting help, changed no-argument semantics, silently accepted trailing arguments, inconsistent error streams, and unverified fall-through behavior.
-- Recommended simplifications: Keep `workflow.sh` no-argument behavior unchanged; limit the core change to explicit help plus `scripts/README.md`; omit `--version` unless the separate Issue 9 scope is explicitly approved.
-- Required test additions: Exact stdout/stderr/status matrices for all six scripts, trailing-argument cases, unknown arguments on both helpers and `from-issue.sh`, isolated zero-argument before/after comparisons, direct filesystem snapshots, and a per-file `bash -n` loop.
-- Overall assessment: Not ready for implementation; the plan contains unresolved contract contradictions and its verification strategy cannot prove several central acceptance criteria.
+- Blocking findings: AR-001, AR-002, AR-003, AR-004, AR-005, AR-006, and AR-007.
+- Regression risks: Wrong-issue closure, stale-audit closure, broken resumability, overwritten human edits, non-TTY behavior drift, and masked driver failures.
+- Recommended simplifications: Refuse auto-run when existing state lacks matching origin metadata, serialize runs, parse only an exact final verdict line, and defer live closing until the hermetic close-gating path passes.
+- Required test additions: Stale-state matrix, stale-output test, concurrent-run interleaving, pause/resume coverage, malformed-verdict fixtures, non-TTY contract checks, stubbed GitHub close integration, and nonzero-status propagation.
+- Overall assessment: NOT READY; the run ID does not establish that the verdict belongs to the current issue, and the plan can irreversibly close the wrong issue.

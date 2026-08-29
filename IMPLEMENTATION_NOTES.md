@@ -1,105 +1,72 @@
 # Implementation Notes
 
-Approved scope: UPDATED_CHANGE_PLAN.md (sha256
-`57f8d5a28311610671666c02b926ad9a378efc85655ede8f116baa41cfcbb953`, matches
-`.workflow/approvals/UPDATED_CHANGE_PLAN.sha256`). CHANGE_SPEC.md and
-BASELINE_REPORT.md also verified against their approval hashes before editing.
+Approved scope: UPDATED_CHANGE_PLAN.md §20 steps 1-8. All steps implemented; no
+scope cuts from §21 were taken.
 
-## Pre-implementation state
+## Pre-existing uncommitted work (untouched)
 
-`git status --porcelain` before any edit showed only untracked workflow
-artifacts (`ADVERSARIAL_REVIEW.md`, `BASELINE_REPORT.md`, `CHANGE_PLAN.md`,
-`CHANGE_SPEC.md`, `UPDATED_CHANGE_PLAN.md`). No tracked file was modified and
-no unrelated uncommitted work existed. Nothing was overwritten.
+`ADVERSARIAL_REVIEW.md`, `BASELINE_REPORT.md`, `CHANGE_PLAN.md`,
+`CHANGE_REQUEST.md`, `CHANGE_SPEC.md`, `UPDATED_CHANGE_PLAN.md` were modified in
+the working tree before implementation began and were not written to.
+`.workflow/` was not written to (state remained `IMPLEMENT` throughout; every
+test runs against a scratch checkout under `mktemp -d`).
 
 ## Files changed
 
-| File | Purpose of change | Plan step | Behavior / invariant affected |
+| File | Purpose | Plan step | Behavior / invariant |
 |---|---|---|---|
-| `scripts/codex-review-plan.sh` | Add `usage()` + `case "$#:${1:-}"` guard between `cd "$ROOT"` and the `test -s REQUIREMENTS.md` precondition block. `-h`/`--help` → usage on stdout, exit 0; any other argument → usage on stderr, exit 1; zero args fall through untouched. | §16.1 | BH-09 (ADD), BH-10 (PRESERVE), IV-08 (NEW), AC-05 |
-| `scripts/codex-create-checklist.sh` | Same guard, with its own basename-correct usage text naming `UPDATED_PROJECT_PLAN.md` / `AUTOMATED_TEST_REPORT.md` / `MANUAL_CHECKLIST.md` (AR-008 — not copy-pasted). | §16.2 | BH-11 (ADD), BH-12 (PRESERVE), IV-08 (NEW), AC-05 |
-| `scripts/workflow.sh` | Extract the existing `*)` heredoc into `usage()` (byte-identical text). Insert an early-exit `case "$#:${1:-}" in 1:-h\|1:--help)` **before** `mkdir -p .workflow/approvals` (AR-001). Re-key the main dispatch `case` from `"${1:-}"` to `"$#:${1:-}"` (AR-005); the four subcommand arms become `1:approve-plan`, `1:approve-review`, `1:approve-updated-plan`, `1:status`. `*)` arm now calls `usage` and keeps `exit 1`. | §16.3 | BH-13 (MODIFY, **narrowed** — see D-1), BH-14/BH-15 (PRESERVE), IV-03 (RELAXED, partial), IV-07, AC-06 |
-| `scripts/stagegate.sh` | Add `STAGEGATE_VERSION="0.1.0"`, `usage()`, and the `$#:$1` guard with a `--version` arm, between `cd "$ROOT"` and `STATE_DIR=`. | §16.5 | BH-01/02/03 (ADD), BH-04 (PRESERVE), IV-07 (NEW), AC-01/02/04 |
-| `scripts/change-workflow.sh` | Same, with `change-workflow.sh`-specific usage text. | §16.6 | BH-05/06/07 (ADD), BH-08 (PRESERVE), IV-07 (NEW), AC-03/04 |
-| `scripts/README.md` | New file. Per-script purpose and exact invocation syntax for all six scripts, written from the finished `usage()` texts; argument-handling summary table; documents the `workflow.sh`/`from-issue.sh` stdout exception (MC-08) and the trailing-argument rejection rule. | §16.8 | BH-17 (ADD), AC-08 |
-| `README.md` | OPT-01: two-line pointer to `scripts/README.md` in the "Manual helpers" section. | §16.10 | AC-08 support; no behavior |
+| `scripts/lib/audit-verdict.sh` (new) | `classify_audit_verdict()` — last-non-blank-line, exact-phrase, fail-closed classifier for `FINAL_AUDIT.md` | §20.1, §1.4 | B-10; I-08; AR-005 |
+| `scripts/tests/audit-verdict-test.sh` (new) | 26 fixture assertions for the classifier, including the AR-005 malformed-input set | §20.1, §16 | I-08 |
+| `scripts/tests/close-flow-test.sh` (new) | 99 hermetic assertions over the whole close decision, the driver lock, the origin preflight, and audit freshness | §20.6, §1.6 | B-01…B-07, I-08…I-11 |
+| `scripts/change-workflow.sh` — path constants | adds `LOCK_DIR`, `ORIGIN_FILE`, `VERDICT_FILE` beside the existing `.workflow` paths | §9 | — |
+| `scripts/change-workflow.sh` — after `hash_file` | sources the classifier lib self-relative | §4 | I-04 |
+| `scripts/change-workflow.sh` — `acquire_lock`/`release_lock` | `mkdir`-atomic, PID-stamped exclusive lock; stale lock cleared on a dead PID; released by the `EXIT` trap | §1.3 | I-10 (NEW) |
+| `scripts/change-workflow.sh` — `origin_preflight`/`write_origin` | refuses to act on in-flight state that cannot be proven to belong to `STAGEGATE_ORIGIN_REPO`/`ISSUE`; skipped entirely for standalone runs | §1.1 | I-11 (NEW), B-10 |
+| `scripts/change-workflow.sh` — before the state loop | `acquire_lock` then `origin_preflight`, once, before any state dispatch | §1.1, §1.3 | I-10, I-11 |
+| `scripts/change-workflow.sh` — `ANALYZE` | `write_origin` claims the checkout on a fresh run | §1.1 | I-11 |
+| `scripts/change-workflow.sh` — `FINAL_AUDIT` | `rm -f FINAL_AUDIT.md` before `run_codex`; writes `.workflow/audit-verdict` as `<run-id>TAB<class>TAB<sha256>`; echoes the class | §1.2 | B-10, I-06, I-08 |
+| `scripts/from-issue.sh` — fetch block | `USED_GH=1` only when `fetch_with_gh` produced the JSON | §4 | B-07, I-09 |
+| `scripts/from-issue.sh` — new functions | `workflow_state`, `origin_line`, `this_origin`, `run_in_flight`, `check_origin_or_refuse`, `seed_is_current`, `confirm_and_run_workflow`, `close_issue_if_ready` | §20.4, §20.5 | B-01…B-07, I-05 RELAXED, I-07, I-08, I-09, I-11 |
+| `scripts/from-issue.sh` — `write_change_request` | drops the trailing `Run:` hint (it moved to the decline path) | §4 | B-01 |
+| `scripts/from-issue.sh` — dispatch | `change)` runs the origin gate, seeds or skips, then confirms/runs/closes; `new)` untouched | §4 | B-08 |
+| `README.md` | documents confirm → auto-run → auto-close, the blocking non-TTY prompt, and the lock/origin refusals | §20.7 | — |
+| `scripts/README.md` | same, plus the `gh`-required-for-close note, the four close preconditions, and the `.workflow` file contract | §20.7 | — |
 
-`scripts/from-issue.sh` — unmodified, as required by BH-16 / §4.
-
-Change surface: `109 insertions(+), 13 deletions(-)` across 6 tracked files,
-plus one new file. No formatting or refactoring outside the inserted guards.
+Containment reached as planned: `gh issue close` is called from exactly one
+place, behind exact-word confirmation, driver exit 0, run-id match, origin
+match, audit-hash match, verdict class, `USED_GH=1`, and live `gh auth`.
 
 ## Deviations from the approved plan
 
-**D-1 (material) — `workflow.sh` zero-argument case left at exit 1
-(IV-03 relaxation only partially implemented).**
+| # | Plan text | What was done | Why |
+|---|---|---|---|
+| D-1 | §4: "start of `main`, before state dispatch" | Lock and preflight placed immediately before the `while true` state loop, after the `WORKFLOW_TRACK` validation | `change-workflow.sh` has no `main()`; this is the equivalent point — before any state is read, dispatched, or written. Verified by `preflight-origin-mismatch`, which leaves `.workflow/state` untouched. |
+| D-2 | §1.1: the absent-origin refusal belongs to the driver preflight; `from-issue.sh` refuses only on a *different* origin | `from-issue.sh` also refuses when state is in flight and `.workflow/origin` is absent | `confirm_and_run_workflow` writes `.workflow/origin` before invoking the driver, so without this the seeder would manufacture the very ownership proof the driver's absent-origin check looks for, re-opening AR-001. The driver-side check is retained unchanged as an independent backstop for direct invocation (covered by `preflight-origin-absent`). |
+| D-3 | §1.2: "`require_file` now fails on absence, not just emptiness" | `require_file` left unmodified | It already fails on absence: `[[ ! -s "$1" ]]` is true for a missing file. The `rm -f` before `run_codex` was the only change needed, and it makes existence the freshness proof as intended. Asserted by `stale-audit-rejected`. |
+| D-4 | §1.5 / §12: the prompt blocks on `read` for non-interactive callers | Prompt text is `printf`ed before a bare `read` instead of being passed to `read -p` | Bash suppresses a `-p` prompt when stdin is not a terminal, so `read -p` would have blocked *silently* on a pipe — satisfying "blocks" but not M-03's "prompt still appears on the pipe." Blocking semantics are unchanged. |
+| D-5 | §1.6: the test sources `from-issue.sh` "not the full CLI" | Added a `STAGEGATE_FROM_ISSUE_SOURCE_ONLY=1` env hook that returns after the function definitions | Sourcing the script otherwise executes the CLI, including a live GitHub fetch, which is not hermetic. It is an env hook, not a CLI flag: the argument contract (B-09, `scripts/README.md:115-129`) is unchanged and re-verified. |
+| D-6 | §21.3 allowed deferring the M-11/M-12 rows of `close-flow-test.sh` to manual-only | Both are automated (`lock-held-by-live-pid`, `lock-stale-pid-cleared`, `stale-audit-rejected`) | The stubs proved cheap: the lock and preflight refuse before any agent call, and a `/usr/bin/true` reviewer reproduces the no-op-reviewer case. No deferral was needed. |
 
-UPDATED_CHANGE_PLAN §7.1 requires that implementation of the IV-03 relaxation
-begin only if the human approval of that document *explicitly reaffirms* it,
-and directs the narrower implementation otherwise. The approval record
-`.workflow/approvals/UPDATED_CHANGE_PLAN.sha256` is a bare SHA-256 hash with
-no prose field, and a case-insensitive search for `IV-03` / `relax` across
-`.workflow/` returned no matches. The approval therefore does not address the
-relaxation specifically.
-
-Per §7.1 and the first §10 stopping condition, I implemented the narrow
-branch:
-
-- `workflow.sh -h` and `workflow.sh --help` → usage on stdout, **exit 0** (the
-  fixed part of BH-13), and no `.workflow/approvals` created.
-- `workflow.sh` with **no arguments** → usage on stdout, **exit 1**,
-  byte-identical to the pre-change baseline (verified by `cmp` against the §7
-  golden fixture, including exit status).
-
-Consequence: AC-06 and BH-13 are satisfied for `-h`/`--help` but **not** for
-the no-argument case, which still exits 1. IV-03 is relaxed only for the two
-explicit help flags. Completing BH-13 requires one further change — adding
-`0:` to the early-exit `case` at `scripts/workflow.sh:18` — and an explicit
-human approval of the IV-03 relaxation. Nothing else depends on it.
-
-**D-2 (minor) — `scripts/README.md` points to the top-level `README.md` for
-the `WORKFLOW_*` table rather than reproducing it.**
-
-The plan (§4) specifies `scripts/README.md` as an "invocation reference." A
-draft included a two-row `WORKFLOW_*` table; a grep found 30+ `WORKFLOW_*`
-variables in the scripts, so a two-row table would have been inaccurate and a
-complete one is outside the frozen scope (CHANGE_SPEC §12 non-goals). The
-section now names only `WORKFLOW_AGENT_CMD` / `WORKFLOW_REVIEWER_CMD` — the
-two that decide which external CLI is spawned, relevant to the §11 containment
-technique — and refers to the top-level `README.md` "Configuration" section
-(verified to exist at `README.md:204`) for the full list.
-
-## Observations, not deviations
-
-- **Trailing arguments to `workflow.sh` subcommands now exit 1.** Re-keying
-  the main `case` on `"$#:${1:-}"` is required by AR-005/§1, and it means
-  `./scripts/workflow.sh status extra` now prints usage and exits 1 where it
-  previously ran `status`. §1 of the approved plan states this explicitly
-  ("a recognized subcommand plus trailing args → usage, exit 1"). The
-  documented single-argument forms (BH-14) are byte-identical. Flagging it
-  because §1 also describes the `*)` path as matching "current behavior
-  exactly", which is true for unknown subcommands but not for this form.
-- **`workflow.sh --version` exits 1** (usage on stdout, via `*)`). Correct:
-  CHANGE_SPEC §13 scopes `--version` to the two drivers only.
-- **`mkdir -p` still runs on `workflow.sh`'s unknown-input path**, as it does
-  today; only the help path was moved ahead of it, per §1.
-- BASELINE_REPORT §13's claim that `run_codex` invokes the `codex-*.sh`
-  scripts was re-checked and remains incorrect (R-5): `run_codex` is an
-  internal function in `change-workflow.sh:370`. Re-grep of `scripts/`
-  confirmed no in-repo caller passes arguments to any of the six scripts
-  (§7.4) — the only matches are documentation strings.
+No RELAXED or REMOVED invariant beyond the already-approved I-05 was introduced.
+No test was weakened, no fixture or expected output was updated to fit the
+implementation, and no unrelated file was reformatted.
 
 ## Unresolved concerns
 
-- **D-1 blocks full AC-06 / BH-13 satisfaction.** Needs a human decision on
-  the IV-03 relaxation. This is the one acceptance criterion not fully met.
-- **R-2 stands:** `0.1.0` is duplicated as a literal in both drivers and can
-  drift. Accepted by the plan (Q-2 deferred).
-- **R-3 stands:** `scripts/README.md` and the `usage()` texts can drift.
-  T-12 gives partial automated coverage (basename, per-flag existence, and
-  every `*.md` / `--flag` token in each `usage()` asserted present in the
-  README), but nothing enforces it in CI — the repo has no CI.
-- The two drivers were exercised only on their argument-handling paths, under
-  the §11 worktree containment with `WORKFLOW_*_CMD=false`. Their state
-  machines were never executed with a real agent, before or after the change
-  (consistent with BASELINE_REPORT §11).
+- **`.gitignore` needed no change.** `.workflow` is ignored wholesale
+  (`.gitignore:1`), so `origin`, `audit-verdict`, and `lock/` are already
+  covered; §9's "gitignored alongside `state`" is satisfied without an edit.
+- **M-04 and M-05 are not automatically verified end to end.** A real close
+  against a live issue requires a full agent pipeline run; `close-flow-test.sh`
+  covers the decision logic with a stubbed `gh`, but the first real `gh issue
+  close` will happen on this change's own run. Carried into
+  `CHANGE_TEST_REPORT.md` as an untested area.
+- **Cross-clone concurrency remains open** (UPDATED_CHANGE_PLAN §22): the lock
+  is per-checkout, so two clones driving the same issue are not mutually
+  excluded. Unchanged by implementation; flagged, not solved.
+- **Stale-lock PID reuse** (§22): a recycled PID reads as a live holder and
+  causes a false refusal. Safe direction only; no false proceed.
+- **Verdict parsing still depends on `prompts/change/final-audit.md`** ending
+  its output with the phrase alone on the last non-blank line. A reviewer that
+  appends a signature block yields `UNKNOWN` — no close, feature silently
+  inert. Editing the prompt is out of scope per CHANGE_SPEC §12.

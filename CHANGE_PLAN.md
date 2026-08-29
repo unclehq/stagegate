@@ -1,332 +1,355 @@
 # Change Plan
 
-Omitted sections: State-transition changes (no `.workflow/state` value, transition, or ordering is touched; the new guards exit before the state machine is entered); Schema or persistence changes (no file format, ledger, or approval-hash change); Concurrency implications (help/version exits before `WORKFLOW_SPECULATE` background stages are spawned — IV-07 — and no concurrent path is modified); Migration plan (no persisted data or state format changes; nothing to migrate).
+Omitted sections: 13 Migration plan (nothing persisted is migrated; the one
+new state file is created fresh and treated as absent-if-missing).
 
 ## 1. Selected technical approach
 
-Per-script inline argument guard. In each of the five scripts that change, add a
-`usage()` heredoc function plus a `case "${1:-}"` guard placed immediately after
-`cd "$ROOT"` (line 5) and before the first side-effecting statement. No shared
-library, no sourcing, no `getopts`.
+Three edits plus docs, in one commit series:
 
-Guard shape for `stagegate.sh` / `change-workflow.sh` (inserted at line 6, above
-`STATE_DIR=` and `mkdir -p`):
+1. **New pure classifier** `scripts/lib/audit-verdict.sh` — sourceable file
+   defining `classify_audit_verdict <file>`, echoing exactly one of
+   `READY`, `READY_WITH_NON_BLOCKING_ISSUES`, `NOT_READY`, `UNKNOWN`.
+   Algorithm: take the **last** line of `FINAL_AUDIT.md` containing any of the
+   three verdict phrases; classify it with an ordered `case`
+   (`NOT READY` → `READY WITH NON-BLOCKING ISSUES` → `READY`); if that line
+   matches more than one phrase, or no line matches, return `UNKNOWN`.
+   Fail-closed: `UNKNOWN` never closes an issue.
+2. **`change-workflow.sh`** — source the classifier; in the `FINAL_AUDIT`
+   state, immediately after `run_codex` writes `FINAL_AUDIT.md`, write
+   `.workflow/audit-verdict` as one TSV line: `<run-id>\t<verdict-class>`,
+   where `<run-id>` is `${STAGEGATE_RUN_ID:--}`. `COMPLETE` is otherwise
+   untouched and still `exit 0`s (B-10, §8 compat).
+3. **`from-issue.sh`** — on the `--change` path only, after
+   `write_change_request`: print the seeded file, print the pre-flight
+   warnings, require an exact-word confirmation, then run
+   `"$ROOT/scripts/change-workflow.sh"` in the foreground with a generated
+   `STAGEGATE_RUN_ID` exported; on return, read `.workflow/audit-verdict`
+   and close the issue only if the run id matches and the class is
+   `READY` or `READY_WITH_NON_BLOCKING_ISSUES`.
+4. **Docs** — `README.md:114-133`, `scripts/README.md:63-82`.
 
-```sh
-STAGEGATE_VERSION="0.1.0"
-
-usage() {
-    cat <<'EOF'
-Usage: stagegate.sh [-h|--help] [--version]
-
-Run the human-gated new-application workflow from REQUIREMENTS.md.
-Takes no positional arguments; all configuration is via WORKFLOW_* environment
-variables (see scripts/README.md).
-EOF
-}
-
-case "${1:-}" in
-    -h|--help)  usage; exit 0 ;;
-    --version)  printf '%s\n' "$STAGEGATE_VERSION"; exit 0 ;;
-    "")         ;;
-    *)          printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 1 ;;
-esac
-```
-
-Guard shape for `codex-review-plan.sh` / `codex-create-checklist.sh` (inserted at
-line 6, above the `test -s ...` precondition block): same, minus the
-`--version` branch.
-
-`workflow.sh`: extract the existing `*)` heredoc into a `usage()` function
-defined above the `case`, then add one branch `-h|--help|"") usage; exit 0 ;;`
-ahead of the existing `*)` branch. The `*)` branch keeps its current text,
-current stdout stream, and `exit 1`.
-
-`from-issue.sh`: no source change (BH-16 PRESERVE).
-
-New file `scripts/README.md`: one section per script — purpose, exact invocation
-syntax, arguments, relevant `WORKFLOW_*` variables, exit codes.
-
-Conventions fixed here so the six scripts agree:
-
-| Decision | Value | Reason |
-|---|---|---|
-| Help stream / exit | stdout, `exit 0` | Spec §4; matches `from-issue.sh` (IV-04) |
-| Unknown-arg stream | stderr | Spec §4 — except `workflow.sh`'s existing `*)` branch, kept on stdout to satisfy BH-15 "unchanged" (see §22 Q-1) |
-| Unknown-arg exit code | `1` | Repo already uses 1 for this (`from-issue.sh:39`, `workflow.sh:84`); BH-15 requires 1 |
-| Version string | literal `STAGEGATE_VERSION="0.1.0"` in each of the two drivers | Spec §13 default; no `VERSION` file (see §22 Q-2) |
-| Guard inspects | `$1` only | Both drivers accept zero positional arguments; anything in `$1` is either a known flag or unknown |
+The run id is the load-bearing detail. `.workflow/state` is persistent and
+`COMPLETE` is re-enterable, so a stale `FINAL_AUDIT.md` from an earlier
+change is otherwise indistinguishable from one this run produced. Pairing
+the verdict with the id of the run that wrote it makes "did *this*
+invocation audit *this* change" decidable without deleting prior state
+(core rule 13).
 
 ## 2. Alternative approaches considered
 
-| # | Approach | Outcome |
+| # | Approach | Rejected because |
 |---|---|---|
-| A-1 | Shared `scripts/_common.sh` with `parse_common_args()`, sourced by all six | Rejected |
-| A-2 | Per-script inline guard (selected) | Selected |
-| A-3 | `getopts` / full option loop per script | Rejected |
-| A-4 | Issue 9 scope only: `--help`/`--version` on the two drivers, no other script, no `scripts/README.md` | Rejected |
-| A-5 | Guard placed before `cd "$ROOT"` (line 4) so help works even if `ROOT` resolution fails | Rejected |
+| A | `from-issue.sh` parses `FINAL_AUDIT.md` itself; driver untouched | Cannot tell a fresh audit from a stale one; duplicates verdict vocabulary in a second file; leaves I-06 unstrengthened (spec B-10 requires the signal to come from the driver) |
+| B | Exit-code convention (`exit 2` on `NOT READY`) | Breaks §8 compat for standalone callers and any `set -e` wrapper; spec fixes `COMPLETE` at `exit 0` |
+| C | `change-workflow.sh --audit-verdict` query subcommand | Breaks the documented "takes no positional arguments" contract (`scripts/README.md:117-124`), which §8 freezes |
+| D | Classifier inline in `change-workflow.sh`, no lib, no test | The whole I-08 safety story rests on this ~12-line function; inline in a 700-line state machine it is unreachable by any automated check |
+| E | `exec` the driver from `from-issue.sh` | Cannot close the issue afterwards — the process is gone |
+| F | Close from inside `change-workflow.sh`'s `COMPLETE` state | Driver has no issue identity (BASELINE §15) and no GitHub capability today; would spread the I-05 relaxation across two scripts instead of one call site (§10) |
 
 ## 3. Why the selected approach is preferred
 
-- A-1 breaks INV-02/IV-02's property that each script is independently
-  self-resolving: sourcing adds an ordering dependency and a new failure mode
-  (missing/renamed `_common.sh` aborts every script under `set -e`). Usage text
-  is per-script anyway, so the shared file would save roughly four lines each
-  while adding a seventh file and a cross-file coupling the repo does not have
-  today.
-- A-3 is more machinery than the spec permits: §12 forbids argument parsing
-  beyond `-h`/`--help`/`--version`/unknown detection, and `getopts` does not
-  handle long options in bash 3.2 (IV-06) without a hand-written loop anyway.
-- A-4 contradicts CHANGE_SPEC §4 and AC-05/AC-06/AC-08.
-- A-5 would place logic before the `cd`, violating IV-02's "resolve and `cd`
-  before other logic" ordering; the guard runs immediately after instead.
-- A-2 keeps the diff local (one contiguous block per file), leaves the state
-  machines untouched, and is trivially revertible per file.
+Confines the I-05 relaxation to one call site in one script (§10); leaves the
+driver's CLI contract, human gates, and approval hashing untouched (I-01–I-03);
+puts the only non-trivial logic in a pure function that a test can drive; and
+fails closed at every branch — no verdict file, no run-id match, `UNKNOWN`
+class, non-zero driver exit, or missing `gh` all mean "do not close."
 
 ## 4. Exact components to modify
 
-| File | Insertion point | Change |
+| Component | Anchor | Edit |
 |---|---|---|
-| `scripts/stagegate.sh` | new lines after `cd "$ROOT"` (line 5), before `STATE_DIR=` (line 7) | version literal, `usage()`, `case` guard with `--version` |
-| `scripts/change-workflow.sh` | new lines after `cd "$ROOT"` (line 5), before `STATE_DIR=` (line 7) | version literal, `usage()`, `case` guard with `--version` |
-| `scripts/codex-review-plan.sh` | new lines after `cd "$ROOT"` (line 5), before `test -s REQUIREMENTS.md` (line 7) | `usage()`, `case` guard, no `--version` |
-| `scripts/codex-create-checklist.sh` | new lines after `cd "$ROOT"` (line 5), before `test -s REQUIREMENTS.md` (line 7) | `usage()`, `case` guard, no `--version` |
-| `scripts/workflow.sh` | `usage()` defined after `approve_file` (line 35); new `case` branch before `*)` (line 75) | `-h`/`--help`/empty → usage, exit 0; `*)` body unchanged except calling `usage` |
-| `scripts/README.md` | new file | Invocation reference for all six scripts |
-| `README.md` (OPTIONAL, OPT-01) | "Manual helpers" section | One-line pointer to `scripts/README.md` |
-
-Verified before planning: no `usage` function or `VERSION` identifier exists in
-any script except `from-issue.sh:7`, so no name collision is introduced.
+| `scripts/lib/audit-verdict.sh` | new | `classify_audit_verdict()` |
+| `scripts/tests/audit-verdict-test.sh` | new | fixture assertions for the classifier |
+| `scripts/change-workflow.sh` | after `hash_file`, ~line 114 | source the lib (self-relative, I-04) |
+| `scripts/change-workflow.sh` | `FINAL_AUDIT`, 663-670 | write `.workflow/audit-verdict`; echo the class |
+| `scripts/from-issue.sh` | `write_change_request`, 206-208 | drop the trailing `Run:` hint from the writer (moves to the decline path) |
+| `scripts/from-issue.sh` | fetch block, 94-100 | set `USED_GH=1` only when `fetch_with_gh` produced the JSON |
+| `scripts/from-issue.sh` | new fns before dispatch | `confirm_and_run_workflow()`, `close_issue_if_ready()` |
+| `scripts/from-issue.sh` | dispatch, 300-303 | `change)` branch calls the two new functions |
+| `README.md` | 114-133 | document the confirmation + auto-run + auto-close flow |
+| `scripts/README.md` | 63-82 | same, plus the `gh`-required-for-close note |
 
 ## 5. Components explicitly not to modify
 
-| Component | Reason |
-|---|---|
-| `scripts/from-issue.sh` | BH-16 PRESERVE; already conforms (IV-04). Do not fold it into a shared mechanism. |
-| State machines in both drivers (`while` loop, stage table, gates) | Spec §12 non-goal |
-| `run_codex` / `run_agent` and the cost ledger in `change-workflow.sh` | Spec §12 non-goal |
-| `mkdir -p .workflow/approvals` at `workflow.sh:7` | Left in place; `workflow.sh --help` creates that directory today and will continue to. Moving it would be an unrequested behavior change. |
-| Approval/hash mechanism, `prompts/`, `GOOD_FIRST_ISSUES.md` | Spec §12 non-goal |
-| `set -euo pipefail` and `ROOT`/`cd` prologue (lines 1–5) of every script | IV-01, IV-02 |
-| `workflow.sh` `*)` usage text and stdout stream | BH-15 |
+`scripts/stagegate.sh`, `scripts/workflow.sh`, `scripts/codex-review-plan.sh`,
+`scripts/codex-create-checklist.sh`, `prompts/**` (including
+`prompts/change/final-audit.md` — the verdict vocabulary is read, not
+changed), `human_gate()`, `verify_approval()`, `get_state`/`set_state`, the
+`COMPLETE` state's existing output and `exit 0`, `write_new_project_brief()`,
+the `CHANGE_REQUEST.md` template body, the argument-handling table
+(`scripts/README.md:115-133` — no new flags on any script).
 
 ## 6. Data-flow changes
 
-One new early-exit path per modified script: `argv[1] → case → (usage → stdout →
-exit 0) | (version → stdout → exit 0) | (unknown → stderr → exit 1) | (empty →
-fall through to existing flow)`. No existing data flow is rerouted; the empty
-case reaches the original first statement with identical state.
+New, one direction only:
 
-Newly reachable-before: nothing. Newly unreachable on the help/version/unknown
-paths: `mkdir -p` (both drivers), `WORKFLOW_*` reads, `test -s` preconditions
-(both `codex-*` scripts), all `claude`/`codex` invocation, the state-machine
-loop.
+```
+from-issue.sh: generate RUN_ID ──export STAGEGATE_RUN_ID──> change-workflow.sh
+change-workflow.sh FINAL_AUDIT: FINAL_AUDIT.md ──classify──> .workflow/audit-verdict
+                                                              ("<RUN_ID>\t<CLASS>")
+from-issue.sh (after driver returns) ──read+match RUN_ID──> gh issue close
+```
 
-## 7. Interface and API changes
+`USED_GH` (set at fetch, read at close) is the second new flow. Nothing else
+changes: `CHANGE_REQUEST.md` content, `.workflow/state`, approvals, logs, and
+the cost ledger are byte-identical in shape.
 
-| Script | Before | After |
-|---|---|---|
-| `stagegate.sh` | zero args, any argv silently ignored → state machine | `-h`/`--help`/`--version` handled; unknown argv rejected; zero args unchanged |
-| `change-workflow.sh` | same | same |
-| `codex-review-plan.sh` | zero args, argv ignored | `-h`/`--help` handled; unknown argv rejected; zero args unchanged |
-| `codex-create-checklist.sh` | same | same |
-| `workflow.sh` | 4 subcommands; everything else → usage + exit 1 | adds empty/`-h`/`--help` → usage + exit 0; 4 subcommands and unknown-subcommand path unchanged |
-| `from-issue.sh` | unchanged | unchanged |
+## 7. State-transition changes
 
-No library API, no env-var additions (IV-05 holds: the new flags carry no
-configuration).
+None to the state machine. `ANALYZE → … → FINAL_AUDIT → COMPLETE` is
+unchanged; no state is added, removed, or reordered. `FINAL_AUDIT` gains one
+side effect (write the verdict file) after its existing `run_codex` and
+before its existing `set_state COMPLETE`.
 
-## 8. Compatibility strategy
+`from-issue.sh` gains a linear post-write sequence: `seeded → confirm? →
+(decline: print hint, exit 0) | (accept: run driver → verdict? → close | skip)`.
 
-- The `""` branch in every `case` guarantees zero-argument behavior is
-  byte-identical (AC-09, BH-04/08/10/12).
-- No in-repo caller passes arguments to any script: `change-workflow.sh` uses
-  its own inline `run_codex` (line 370) rather than the `codex-*` helpers, and
-  no script invokes another. The only callers are humans and the agent following
-  `CLAUDE.md` Stage 2/6, both zero-argument. (Note: BASELINE_REPORT §13 states
-  the `codex-*` helpers are invoked by `run_codex`; grep of `scripts/` shows no
-  such invocation. Regression risk there is therefore lower than the baseline
-  assumed, not higher.)
-- `workflow.sh` unknown subcommand keeps exit 1 (BH-15); only empty/`-h`/`--help`
-  move to exit 0 (IV-03 RELAXED, approved at the CHANGE_SPEC gate).
-- Bash 3.2 (IV-06): `case`, `printf`, quoted heredocs only; no associative
-  arrays, no `${var^^}`, no regex.
+## 8. Interface and API changes
 
-## 9. Error and recovery behavior
-
-| Condition | Behavior |
+| Surface | Change |
 |---|---|
-| Unknown flag/arg on the 4 newly-guarded scripts | `Unknown argument: <arg>` + usage to stderr, exit 1, no filesystem/network/subprocess effect |
-| Unknown subcommand on `workflow.sh` | unchanged: usage to stdout, exit 1 |
-| `-h`/`--help`/`--version` | usage or version to stdout, exit 0, no side effect (IV-07, IV-08) |
-| Trailing arguments after a recognized flag (`--help extra`) | `$1` matches, help printed, exit 0; extra args ignored. Accepted — the drivers take no positionals, so this is unreachable in documented use. |
-| Nothing to recover | The guards perform no writes, so no partial state is possible on any new path |
+| `from-issue.sh` CLI flags | none — no new flags (B-09, §8) |
+| `from-issue.sh --change` stdout | `Run:` hint moves from the success path to the decline path; adds the seeded-file echo, warnings, prompt, driver output, close/skip message |
+| `from-issue.sh --new` | none (B-08) |
+| `from-issue.sh` exit codes | 0 on decline and on completed-run-with-close-skipped; non-zero if the driver fails or `gh issue close` fails |
+| `change-workflow.sh` CLI | none (`-h`, `--version`, unknown-arg, no positionals all unchanged) |
+| `change-workflow.sh` env | reads new optional `STAGEGATE_RUN_ID`; absent → writes `-` |
+| GitHub | new write: `gh issue close --comment` (I-05 RELAXED) |
 
-## 10. Rollback plan
+## 9. Schema or persistence changes
 
-- Each script's guard is one contiguous inserted block plus (for `workflow.sh`)
-  one added `case` branch. `git checkout HEAD -- scripts/<file>` restores any
-  single script independently; the scripts have no cross-dependency, so a
-  partial rollback leaves a working system with mixed help coverage.
-- Full rollback: `git revert <commit>` — additive diffs plus one new untracked-
-  then-tracked file, no data migration, no state to unwind (`.workflow/` is
-  untouched by this change).
-- Detection signal for needing rollback: any zero-argument invocation of
-  `stagegate.sh`, `change-workflow.sh`, `workflow.sh <subcommand>`, or the
-  `codex-*` helpers failing where it previously succeeded.
+One new file, `.workflow/audit-verdict` (gitignored, alongside `state` and
+`cost.tsv`): a single line, `<run-id>TAB<class>`, overwritten each time
+`FINAL_AUDIT` runs. No reader other than `from-issue.sh`; absent file is
+always valid and means "no verdict from this run." No existing file format
+changes.
 
-## 11. Feature-flag and containment strategy
+## 10. Compatibility strategy
 
-No feature flag: the change is a guard on an argument surface that is currently
-unused, and a flag would add configuration the spec forbids (§12, IV-05).
+- `--new` path untouched (B-08); verified by diffing its output against the
+  current script's.
+- `change-workflow.sh` standalone: unchanged CLI, unchanged `COMPLETE`
+  output apart from one added verdict line, unchanged `exit 0` (B-10).
+  Running it by hand never sets `STAGEGATE_RUN_ID`, so the verdict file
+  records `-` and can never satisfy a later close check.
+- **Non-interactive callers.** Spec §8 anticipates scripted callers of
+  `from-issue.sh --change` blocking on the new prompt. This plan instead
+  checks `[ -t 0 ]` first: with no TTY, print the seeded-file notice and the
+  `Run:` hint and exit 0 — the pre-change behavior. This is the §9 rule
+  "EOF/non-exact input → treat as decline (B-03)" applied before the read
+  rather than after it, and it is strictly safer than blocking a headless
+  job forever. It is *not* a `--yes` bypass (§12 non-goal): the no-TTY
+  direction is decline, never auto-run. **Flagged for the reviewer as a
+  deliberate softening of §8's stated expectation.**
 
-Containment applies to **verification**, which is the risky part. BASELINE_REPORT
-§11 declined to execute the two drivers because a fall-through starts a real,
-billed run. Verification of AC-01..AC-04 must therefore run under all three of:
+## 11. Concurrency implications
 
-1. A throwaway copy of the repo (`cp -R` to a temp dir, or `git worktree add`);
-   each script resolves `ROOT` from its own path (IV-02), so a copy is fully
-   isolated from this working tree.
-2. `WORKFLOW_AGENT_CMD=false WORKFLOW_REVIEWER_CMD=false` exported, so any
-   fall-through cannot invoke `claude` or `codex` and dies immediately under
-   `set -e` with no spend.
-3. The copy has no `.workflow/` directory, so `mkdir -p` becoming reachable is
-   directly observable as a created directory.
+`.workflow/` was already single-writer — two concurrent drivers in one
+checkout share `.workflow/state` and corrupt each other today. The verdict
+file inherits that assumption and adds no new sharing. The run-id match means
+a concurrent second driver writing the file cannot cause a *false* close (ids
+differ); worst case it causes a missed close, which is the safe direction.
+Single `printf` write; no locking added.
 
-## 12. Automated-test strategy
+## 12. Error and recovery behavior
 
-The repository has no test runner and CHANGE_SPEC §12 rules out introducing one.
-Automated verification is therefore a fixed command matrix, executed under the
-§11 containment and recorded verbatim (command, stdout/stderr, exit code) in
-`CHANGE_TEST_REPORT.md`. Never mark an unexecuted command as passed.
-
-| ID | Command | Expected |
+| Condition | Behavior | Spec ref |
 |---|---|---|
-| T-01 | `stagegate.sh --help`; `-h` | usage on stdout, exit 0, no `.workflow/` created |
-| T-02 | `stagegate.sh --version` | `0.1.0`, exit 0 |
-| T-03 | `change-workflow.sh --help`; `-h`; `--version` | as T-01/T-02 |
-| T-04 | `stagegate.sh --bogus`; `change-workflow.sh --bogus` | usage on stderr, exit 1, no `.workflow/` created |
-| T-05 | `codex-review-plan.sh --help`; `-h`; and same for `codex-create-checklist.sh` | usage on stdout, exit 0, no precondition failure |
-| T-06 | `codex-review-plan.sh --bogus` | usage on stderr, exit 1 |
-| T-07 | `workflow.sh`; `-h`; `--help` | usage on stdout, exit 0 (was exit 1) |
-| T-08 | `workflow.sh status` | output byte-identical to baseline §9, exit 0 |
-| T-09 | `workflow.sh bogus-subcommand` | usage on stdout, exit 1 — unchanged |
-| T-10 | `from-issue.sh --help`; `-h`; no args | byte-identical to baseline §9, exit 0 |
-| T-11 | `bash -n scripts/*.sh` | exit 0 for all six (syntax check, cheap and side-effect free) |
-| T-12 | `test -s scripts/README.md` and read-through against §4 invocation syntax | exit 0, all six scripts documented |
-| T-13 | `git status --porcelain` before/after T-01..T-11 in the temp copy | no tracked-file or `.workflow/` change from any help/version/unknown invocation |
+| No TTY on stdin | print seeded file + `Run:` hint, exit 0, no driver, no close | §10 above, B-03 |
+| Prompt gets EOF or non-exact input | decline: hint, exit 0, no driver, no close | §9, B-03 |
+| Driver exits non-zero | report the failure plainly, no close, propagate non-zero | §9, B-06 |
+| Driver exits 0 via a **declined internal gate** (`change-workflow.sh:226`) | no verdict file for this run id → no close | B-06 |
+| Driver exits 0 from a stale `COMPLETE` state | `FINAL_AUDIT` never ran this invocation → no matching verdict → no close | B-06 |
+| `.workflow/audit-verdict` missing, malformed, or run id mismatched | no close; print why | I-08 |
+| Class is `NOT_READY` or `UNKNOWN` | issue left open; print the verdict and why | B-05, I-08 |
+| Fetch used the `curl` fallback (`USED_GH=0`) | skip close, explicit message, exit reflects the successful run | B-07, I-09 |
+| `gh` missing or unauthenticated at close time | same as above — skip + message, not a hard failure | §9, I-09 |
+| `gh issue close` itself fails | print the error, exit non-zero, and state explicitly that the workflow completed and only the close failed | §9 |
 
-Alternative considered and rejected: adding `tests/help_test.sh`. It would give
-a re-runnable check, but CHANGE_SPEC §12 explicitly non-goals a test framework,
-and a single untriggered script with no runner or CI is not meaningfully more
-durable than the recorded matrix. Revisit if a runner is ever added.
+Implementation traps to respect (both are `set -euo pipefail` scripts):
+`read` returns non-zero on EOF, and `gh auth status` returns non-zero when
+logged out — both must be wrapped in `if !` / `|| true`, never left bare.
 
-## 13. Regression-test strategy
+## 14. Rollback plan
 
-Not a bug fix, so there is no single pre-existing failure to pin. The nearest
-equivalent — a check that fails before the change and passes after — is **T-05**:
-`codex-review-plan.sh --help` and `codex-create-checklist.sh --help` produce no
-output and exit 1 today (B-04, B-05), and must produce usage and exit 0 after.
-T-07 is the second such check (`workflow.sh --help`: exit 1 → exit 0).
+1. `git revert` the change's commits (or `git checkout <prev> -- scripts/
+   README.md scripts/README.md`). `from-issue.sh` returns to
+   write-and-print; `change-workflow.sh` returns to a silent `COMPLETE`.
+2. Delete `scripts/lib/audit-verdict.sh`, `scripts/tests/`, and
+   `.workflow/audit-verdict` if present. Nothing reads the verdict file after
+   the revert; leaving it is harmless.
+3. No data migration, no `.workflow/state` reset, no approval-hash
+   invalidation — none of those formats changed (§9, spec §11).
+4. Already-closed GitHub issues are **not** reopened by a rollback; reopen by
+   hand if required. This is the only non-code-reversible effect of the
+   change.
 
-Pure regression guards, all of which must produce output identical to
-BASELINE_REPORT §9: T-08, T-09, T-10. T-11 guards IV-06 (bash 3.2 parse), T-13
-guards IV-07 (no side effects).
+## 15. Feature-flag or containment strategy
 
-## 14. Manual-verification strategy
+No new flag or env toggle (unrequested surface). Containment is structural:
+the auto-run reaches only the `--change` branch of the dispatch; the GitHub
+write exists at exactly one call site; and four independent conditions must
+all hold to reach it — TTY present, exact-word confirmation, run-id-matched
+verdict in `{READY, READY_WITH_NON_BLOCKING_ISSUES}`, and `USED_GH=1` with
+live `gh` auth. The pre-existing containment for spend (`WORKFLOW_BUDGET_*`)
+and for stage approval (`human_gate`) is unchanged and still applies to the
+chained run.
 
-| ID | Check |
-|---|---|
-| MC-01 | Read the diff: every guard sits after `cd "$ROOT"` and before the first side-effecting statement in its file (IV-02, IV-07, IV-08) |
-| MC-02 | Read the diff: `set -euo pipefail` and lines 1–5 unmodified in all six scripts (IV-01, IV-02) |
-| MC-03 | Read the guards for bash 3.2 constructs only — no associative arrays, no `${var^^}`, no regex (IV-06); confirmed executable by T-11 |
-| MC-04 | Read the diff: no new `WORKFLOW_*` read and no configuration flag added (IV-05) |
-| MC-05 | Cross-read `scripts/README.md` against each script's actual arguments and each `usage()` text — no documented flag that does not exist, no flag that is not documented (AC-08) |
-| MC-06 | Confirm the temp-copy containment of §11 was actually used for T-01..T-06, and that `claude`/`codex` were never invoked (no cost-ledger or log growth) |
+## 16. Automated-test strategy
 
-A reviewer-authored `MANUAL_CHECKLIST.md` supersedes this list where they
-conflict.
+The repo has no test framework or CI (BASELINE §7); this plan does not add
+one. Two levels:
 
-## 15. Observability changes
+- `scripts/tests/audit-verdict-test.sh` — plain bash, no framework, sources
+  the lib and asserts `classify_audit_verdict` over fixtures written to a
+  temp dir: a file ending in `READY`; one ending in
+  `READY WITH NON-BLOCKING ISSUES`; one ending in `NOT READY`; one whose
+  body quotes `NOT READY` in a finding but ends `READY` (must classify
+  `READY` — last match wins); one with a single line containing two phrases
+  (`UNKNOWN`); one with no verdict (`UNKNOWN`); an empty file (`UNKNOWN`); a
+  missing file (`UNKNOWN`, exit non-zero-free). Prints `PASS`/`FAIL` per case
+  and exits non-zero on any failure.
+- `for f in scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh; do bash -n
+  "$f"; done` — must exit 0 for all (AC-7).
 
-None to runtime logging. The only new operator-visible surface is the usage and
-version text itself and `scripts/README.md`.
+Not automatable here: everything requiring a TTY, a live agent pipeline, or a
+GitHub write. Those are §18.
 
-## 16. Implementation sequence
+## 17. Regression-test strategy
 
-1. `scripts/codex-review-plan.sh` — guard (IV-08). Lowest blast radius;
-   establishes the block that the other files copy.
-2. `scripts/codex-create-checklist.sh` — same guard.
-3. `scripts/workflow.sh` — extract `usage()`, add the `-h|--help|""` branch
-   (IV-03 relaxation), leave `*)` semantics intact.
-4. Run T-05..T-09, T-11 in place (these three scripts are safe to execute
-   directly: they invoke no agent on the paths exercised, and T-09/T-08 match
-   baseline behavior).
-5. `scripts/stagegate.sh` — version literal + guard (IV-07). Highest blast
-   radius; done after the pattern is proven.
-6. `scripts/change-workflow.sh` — same.
-7. Set up the §11 containment (temp copy, `WORKFLOW_*_CMD=false`), run
-   T-01..T-04, T-11, T-13.
-8. `scripts/README.md` — write from the finished `usage()` texts so the two
-   cannot disagree; run T-12, MC-05.
-9. Record deviations in `IMPLEMENTATION_NOTES.md`, results in
-   `CHANGE_TEST_REPORT.md`.
-10. OPT-01 (`README.md` pointer) last, only if steps 1–9 are clean.
+Not a bug fix, so there is no pre-existing failing test to name. The
+regression surface (BASELINE §13) is covered by re-executing the BASELINE §8
+command set verbatim and diffing against BASELINE §9 results:
 
-## 17. Scope cuts under time pressure
+| Guard | Command | Expected |
+|---|---|---|
+| Arg contract, all scripts | BASELINE §8 lines 3-7 | identical output and exit codes |
+| `--new` path unchanged (B-08) | `./scripts/from-issue.sh <n> --new` against a scratch checkout, diff stdout and the resulting `REQUIREMENTS.md` vs. the pre-change script | byte-identical |
+| Syntax | `bash -n` × all scripts | exit 0 |
+| Driver standalone (B-10) | `./scripts/change-workflow.sh --help`, `--version`, `bogus` | unchanged per `scripts/README.md:120` |
+
+## 18. Manual-verification strategy
+
+| ID | Check | Expected |
+|---|---|---|
+| M-01 | `from-issue.sh <n> --change`, decline at the prompt | file written, hint printed, driver not started, issue still OPEN (B-03) |
+| M-02 | Same, press ENTER / type a wrong word / send EOF | treated as decline (§9) |
+| M-03 | Same, piped stdin (no TTY) | seeded + hint + exit 0, no prompt, no driver (§10) |
+| M-04 | Confirm; let the driver reach `COMPLETE` with a `READY` audit | `.workflow/audit-verdict` holds this run's id; issue CLOSED with a comment; `gh issue view <n> --jq .state` == `CLOSED` (B-04, AC-3) |
+| M-05 | Hand-edit `FINAL_AUDIT.md` to `NOT READY`, re-run only the audit stage, re-check | issue OPEN, explanatory message (B-05) |
+| M-06 | Confirm, then decline an internal `human_gate` | driver exits 0; no close (B-06) |
+| M-07 | Confirm with `PATH` stripped of `gh` at close time / `gh auth logout` | close skipped with a message, run still reports success (B-07, I-09) |
+| M-08 | `from-issue.sh <n> --new` | unchanged output, no prompt, no close (B-08) |
+| M-09 | Pre-existing `.workflow/state` of `IMPLEMENT` | prompt shows the resume warning; nothing auto-deletes state (core rule 13) |
+| M-10 | Run each script from `/tmp` via absolute path | all still work (I-04), including the new `source` of the lib |
+
+## 19. Observability changes
+
+Additive stdout only: the seeded-file echo and pre-flight warnings before the
+prompt; one `Audit verdict: <class>` line in `FINAL_AUDIT`; and one
+close/skip/failure line at the end. `.workflow/audit-verdict` doubles as the
+durable record of what the last audit concluded. No logging framework, no
+new log files, no change to `.workflow/logs/` or `cost.tsv`.
+
+## 20. Implementation sequence
+
+1. Write `scripts/tests/audit-verdict-test.sh` first (all cases fail — the
+   lib does not exist), then `scripts/lib/audit-verdict.sh` until it passes.
+2. `change-workflow.sh`: source the lib; write the verdict file in
+   `FINAL_AUDIT`. `bash -n`; confirm `--help`/`--version`/unknown-arg
+   unchanged.
+3. `from-issue.sh`: `USED_GH` capture, `confirm_and_run_workflow()` with the
+   pre-flight display (seeded file, uncommitted-work reminder, spend
+   reminder, resume warning if `.workflow/state` is set), TTY check, exact
+   word, driver invocation via `if ! …; then`. Verify M-01/M-02/M-03/M-08
+   before writing any close code.
+4. `from-issue.sh`: `close_issue_if_ready()` — run-id + class + `USED_GH` +
+   live-auth checks, then `gh issue close --repo "$OWNER/$REPO" --comment`
+   with the class and pointers to `FINAL_AUDIT.md` and `.workflow/change.diff`.
+5. Docs: `README.md:114-133`, `scripts/README.md:63-82`.
+6. Full check pass: `bash -n` × all, BASELINE §8 replay, M-01…M-10.
+
+Steps 1-3 contain no GitHub write; the I-05 relaxation lands only at step 4,
+so everything before it is revertible without touching the issue.
+
+## 21. Scope cuts under time pressure
 
 Cut in this order:
 
-1. OPT-01 — the `README.md` cross-link (not required by any AC; Core rule 5).
-2. `--version` on both drivers (BH-02, BH-06 / AC-02) — the change request asks
-   for help, not version; `--version` comes from Issue 9 only.
-3. The `*)` unknown-argument branch on the two `codex-*` scripts (keep their
-   `-h`/`--help` branch) — those scripts have no callers passing arguments.
-4. `workflow.sh`'s IV-03 relaxation (BH-13) — leave it at exit 1, since it is
-   the only behavior *change* in the set rather than an addition.
+1. Close-comment richness — reduce to the verdict class alone, dropping the
+   `change.diff` pointer (AC-3 requires only that a comment exist).
+2. The resume warning in the pre-flight display (M-09 becomes advisory).
+3. `README.md` prose polish, keeping `scripts/README.md` accurate.
 
-Never cut: `-h`/`--help` on all six scripts (the literal change request), and
-`scripts/README.md` (AC-08).
+Never cut: the confirmation gate (I-07), the run-id match (I-08), the
+`USED_GH`/auth guard (I-09), the classifier test (the sole automated
+coverage of the fail-closed logic).
 
-## 18. Change-impact table
+## 22. Risks and unresolved questions
+
+- **Stale-state resume (highest).** `from-issue.sh` chains into a driver whose
+  `.workflow/state` may belong to a *different*, in-flight change; the
+  chained run then resumes that work under this issue's banner. The run-id
+  match prevents a wrong *close* only when `FINAL_AUDIT` does not re-run —
+  if the resumed run does reach `FINAL_AUDIT`, its verdict is about the other
+  change. Mitigated by the pre-flight warning, not eliminated. Auto-resetting
+  state would violate core rule 13. **Raised for the reviewer as the sharpest
+  residual risk.**
+- **Uncommitted-work capture.** `README.md:106` tells the human to commit or
+  stash before starting the driver, because `IMPLEMENT` records
+  `git diff` of the whole tree. Chaining removes the natural pause for that
+  step; the pre-flight reminder is the only mitigation.
+- **Verdict parsing brittleness.** Depends on `FINAL_AUDIT.md` ending with
+  one phrase from `prompts/change/final-audit.md:56-58`. A reviewer CLI that
+  paraphrases yields `UNKNOWN` → no close (safe, but the feature silently
+  stops working). Not fixable from this side without editing the prompt,
+  which §12 forbids.
+- **Trust-surface change.** `from-issue.sh` goes from one local write plus a
+  read-only fetch to a long-running, budget-spending, GitHub-mutating script
+  (BASELINE §16). Accepted by the spec; the four-condition containment in
+  §15 is the answer.
+- **UNRESOLVED — comment authorship.** The close comment is written by a
+  script asserting a machine verdict on a public issue. Wording must
+  attribute it to the audit, not claim human sign-off. Proposed text:
+  "Closed by stagegate: change workflow completed with FINAL_AUDIT.md
+  verdict `<CLASS>`. See FINAL_AUDIT.md and .workflow/change.diff in the
+  working tree." Confirm at plan approval.
+- **UNRESOLVED — `scripts/lib/` precedent.** This adds the repo's first
+  non-flat script directory and first test file to a six-script layout. Kept
+  because it is the only way to get automated coverage of the fail-closed
+  classifier (alternative D). If the reviewer judges it scope creep, the
+  fallback is an inline function plus M-05-style manual fixtures only.
+
+## Change-impact table
 
 | Component | Planned change | Reason | Regression risk | Test coverage |
 |---|---|---|---|---|
-| `scripts/stagegate.sh` | Insert version literal, `usage()`, `case` guard at line 6 | BH-01/02/03, AC-01/02/04, IV-07 | Medium — 594-line driver, real spend on fall-through; mitigated by the `""` branch and §11 containment | T-01, T-02, T-04, T-11, T-13; MC-01..MC-04 |
-| `scripts/change-workflow.sh` | Same | BH-05/06/07, AC-03/04, IV-07 | Medium — as above, plus cost ledger downstream | T-03, T-04, T-11, T-13; MC-01..MC-04 |
-| `scripts/codex-review-plan.sh` | Insert `usage()` + guard above the `test -s` block | BH-09, AC-05, IV-08 | Low — 73 lines, no in-repo caller, zero-arg path untouched | T-05, T-06, T-11; MC-01 |
-| `scripts/codex-create-checklist.sh` | Same | BH-11, AC-05, IV-08 | Low — as above | T-05, T-11; MC-01 |
-| `scripts/workflow.sh` | Extract `usage()`; add `-h|--help|""` branch before `*)` | BH-13, AC-06, IV-03 (RELAXED) | Medium — only behavior *change* in the set; a mis-ordered branch could swallow `status`/`approve-*` | T-07, T-08, T-09, T-11; MC-01 |
-| `scripts/from-issue.sh` | None | BH-16 PRESERVE | None | T-10 |
-| `scripts/README.md` | New file | BH-17, AC-08 | None (new file) | T-12, MC-05 |
-| `README.md` | OPT-01: one-line pointer (optional, first cut) | CONTRIBUTING.md doc convention | None | MC-05 |
+| `scripts/lib/audit-verdict.sh` | new pure classifier | machine-readable verdict (B-10, I-08) | none — new file, no existing caller | `scripts/tests/audit-verdict-test.sh` (8 fixtures) |
+| `scripts/tests/audit-verdict-test.sh` | new | first automated check in the repo | none | self |
+| `scripts/change-workflow.sh` `FINAL_AUDIT` | write `.workflow/audit-verdict` | expose the verdict without changing exit codes (I-06 STRENGTHENED) | low — additive, after the existing `run_codex`, before the existing `set_state` | `bash -n`; M-04, M-05 |
+| `scripts/change-workflow.sh` header | `source` the lib | reuse the classifier | low — must be self-relative or breaks I-04 | M-10; `--help`/`--version` replay |
+| `scripts/from-issue.sh` fetch block | set `USED_GH` | close requires `gh`, not `curl` (I-09) | low — flag only, fetch logic unchanged | M-07 |
+| `scripts/from-issue.sh` `write_change_request` | drop the trailing `Run:` hint | hint moves to the decline path (B-01/B-03) | low — file content unchanged, stdout changes | M-01 |
+| `scripts/from-issue.sh` new confirm fn | prompt + TTY check + driver invocation | B-01, B-02, I-07 | **medium** — `set -e` + bare `read` on EOF is a live trap | M-01, M-02, M-03 |
+| `scripts/from-issue.sh` new close fn | `gh issue close --comment` | B-04, I-05 RELAXED | **high** — only irreversible effect in the change | M-04…M-07 |
+| `scripts/from-issue.sh` dispatch | call the two fns in `change)` only | keep `--new` untouched (B-08) | medium — a misplaced call would hit `--new` | M-08, `--new` byte-diff |
+| `README.md`, `scripts/README.md` | document the new flow | BASELINE §12; docs currently describe a two-step handoff | none functional | M-01…M-08 read against the docs |
 
-## 19. Traceability
+## Traceability
 
 | Requirement | Behavior | Invariant | Component | Automated test | Manual check |
 |---|---|---|---|---|---|
-| AC-01 | BH-01 | IV-07, IV-02 | `stagegate.sh` | T-01, T-13 | MC-01, MC-06 |
-| AC-02 | BH-02 | IV-05 | `stagegate.sh` | T-02 | MC-04 |
-| AC-03 | BH-05, BH-06 | IV-07, IV-02 | `change-workflow.sh` | T-03, T-13 | MC-01, MC-06 |
-| AC-04 | BH-03, BH-07 | IV-07 | both drivers | T-04, T-13 | MC-01, MC-06 |
-| AC-05 | BH-09, BH-11, BH-10, BH-12 | IV-08 | both `codex-*` scripts | T-05, T-06 | MC-01 |
-| AC-06 | BH-13, BH-14, BH-15 | IV-03 (RELAXED) | `workflow.sh` | T-07, T-08, T-09 | MC-01 |
-| AC-07 | BH-16 | IV-04 | `from-issue.sh` | T-10 | — |
-| AC-08 | BH-17 | — | `scripts/README.md` | T-12 | MC-05 |
-| AC-09 | BH-04, BH-08 | IV-05 | both drivers | T-13 (and T-01/T-03 no-mutation checks) | MC-04 |
-| Spec §4 (bash 3.2) | all | IV-06 | all modified scripts | T-11 | MC-03 |
-| Spec §4 (`set -euo pipefail`, `cd "$ROOT"` first) | all | IV-01, IV-02 | all modified scripts | T-11 | MC-02 |
+| AC-1 seed → prompt → run | B-01, B-02 | I-07 | `from-issue.sh` confirm fn | `bash -n` | M-04 |
+| AC-2 decline runs nothing | B-03 | I-07 | `from-issue.sh` confirm fn | — | M-01, M-02, M-03 |
+| AC-3 READY → closed + comment | B-04, B-10 | I-05, I-06, I-08 | `change-workflow.sh` `FINAL_AUDIT`; `from-issue.sh` close fn; classifier | classifier test | M-04 |
+| AC-4 NOT READY / incomplete → open | B-05, B-06 | I-08 | classifier; run-id match | classifier test (`NOT_READY`, `UNKNOWN`) | M-05, M-06, M-09 |
+| AC-5 curl fallback → skip + message | B-07 | I-09 | `USED_GH` + auth guard | — | M-07 |
+| AC-6 `--new` unchanged | B-08 | I-04 | dispatch `case` | `bash -n`; `--new` byte-diff | M-08 |
+| AC-7 `bash -n` + arg contract | B-09 | I-04 | all scripts | `bash -n` × all; BASELINE §8 replay | M-10 |
+| Existing gates unweakened | — | I-01, I-02, I-03 | `human_gate`, `verify_approval`, `run_codex` call sites — not modified | — | M-06 (declined gate still halts) |
 
-## 20. Risks and unresolved questions
-
-| ID | Item | Disposition |
-|---|---|---|
-| R-1 | A malformed guard lets `--bogus` fall through on a driver, starting a real billed run during verification | Mitigated by §11 containment (temp copy + `WORKFLOW_*_CMD=false`); implementer must not run T-04 in this working tree first |
-| R-2 | `0.1.0` duplicated in two files drifts | Accepted for now; single literal per driver, named `STAGEGATE_VERSION`, documented in `scripts/README.md`. See Q-2. |
-| R-3 | `scripts/README.md` and the `usage()` texts drift apart | Mitigated by sequence step 8 (write the doc from the finished usage texts) and MC-05; no automated enforcement exists |
-| R-4 | `workflow.sh` help branch placed after `*)` or matching too broadly would break `status`/`approve-*` | T-08, T-09 are byte-comparison regression checks against BASELINE_REPORT §9 |
-| R-5 | Baseline §13 asserts `run_codex` invokes the `codex-*` helpers; it does not (§8 above). If a caller is added later that passes arguments, the new `*)` branch would reject them | Recorded; no action — no such caller exists today |
-| Q-1 | UNRESOLVED (reviewer decision): CHANGE_SPEC §4 says unknown arguments print usage to **stderr** on all six scripts, but BH-15 says `workflow.sh`'s unknown-subcommand path is **unchanged** (it prints to stdout today). Plan follows BH-15 and leaves that one path on stdout, so `workflow.sh` is the only script whose unknown-argument usage goes to stdout. | Confirm at the CHANGE_PLAN gate; if stderr is preferred, BH-15 must be reclassified MODIFY |
-| Q-2 | UNRESOLVED (carried from CHANGE_SPEC §13): literal `0.1.0` per driver vs. a shared `VERSION` file read by both | Defaulting to the literal for minimal change surface; a `VERSION` file adds a read that must also be guarded against absence under `set -e` |
-| Q-3 | Exact usage wording is implementer's choice (CHANGE_SPEC §13); the plan fixes only structure (script name, accepted arguments, pointer to `scripts/README.md`) | No action needed |
+Bug-fix regression test: not applicable — this is a Feature (CHANGE_SPEC §1);
+there is no pre-existing failing behavior to pin. The nearest equivalent is
+the classifier's `NOT_READY`/`UNKNOWN` fixtures, which must pass before the
+close code at step 4 is written.

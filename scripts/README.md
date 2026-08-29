@@ -74,12 +74,42 @@ section of `REQUIREMENTS.md` from it.
 ./scripts/from-issue.sh                   # no arguments: same as --help
 ```
 
-- `--change` writes `CHANGE_REQUEST.md` for `./scripts/change-workflow.sh`
-  (the default if `CHANGE_REQUEST.md` already exists or the repo is not empty).
+- `--change` writes `CHANGE_REQUEST.md` (the default if `CHANGE_REQUEST.md`
+  already exists or the repo is not empty), then prompts for the exact word
+  `RUN` and, on confirmation, runs `./scripts/change-workflow.sh` in the same
+  process. Anything other than `RUN`, including EOF, is a decline: the file
+  stays, nothing runs, exit 0. The prompt is printed and blocks even when stdin
+  is not a terminal.
 - `--new` replaces the project-brief section of `REQUIREMENTS.md` for
-  `./scripts/stagegate.sh`.
+  `./scripts/stagegate.sh`. Unchanged: no prompt, no auto-run, no close.
 
 Requires either the `gh` CLI (authenticated) or `curl` (public repos only).
+Closing the issue additionally requires `gh`: if the issue was fetched over the
+`curl` fallback, or `gh` is missing or unauthenticated at close time, the close
+is skipped with a message and the run is still a success.
+
+After a confirmed run exits 0, the issue is closed only if all of these hold:
+`.workflow/audit-verdict` records this run's id, its verdict class is `READY` or
+`READY_WITH_NON_BLOCKING_ISSUES`, `.workflow/origin` still names this issue, and
+`FINAL_AUDIT.md` still hashes to the value recorded when it was classified. Any
+mismatch leaves the issue open and prints the reason. A driver exit code other
+than 0 is propagated and no close is attempted.
+
+State files this contract depends on, all under the gitignored `.workflow/`:
+
+| File | Written by | Meaning |
+|---|---|---|
+| `origin` | `from-issue.sh` on confirmation; `change-workflow.sh` in `ANALYZE` | `<owner/repo>TAB<issue>` that owns this checkout's in-flight run |
+| `audit-verdict` | `change-workflow.sh` in `FINAL_AUDIT` | `<run-id>TAB<class>TAB<sha256 of FINAL_AUDIT.md>` |
+| `lock/pid` | `change-workflow.sh` for the length of a run | pid of the run holding the checkout |
+
+`from-issue.sh --change` refuses to seed when `.workflow/state` shows an
+in-flight run whose `.workflow/origin` names a different issue, or names nothing
+at all. When the origin matches the issue being seeded, `CHANGE_REQUEST.md` is
+left as it is — hand edits survive a resume — and only the prompt is repeated.
+`change-workflow.sh` performs the mirror-image check when launched by
+`from-issue.sh`, and refuses to start at all while another run holds
+`.workflow/lock`.
 
 ### `codex-review-plan.sh` — adversarial plan review (Stage 2)
 

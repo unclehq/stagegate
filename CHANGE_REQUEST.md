@@ -1,6 +1,6 @@
 # Change Request
 
-Seeded from [unclehq/stagegate#1](https://github.com/unclehq/stagegate/issues/1).
+Seeded from [unclehq/stagegate#2](https://github.com/unclehq/stagegate/issues/2).
 
 ## Change Type
 
@@ -8,12 +8,13 @@ Feature | Bug Fix | Prototype | Refactor | Performance | Security | Upgrade
 
 ## Summary
 
-Help
+help and close issues
 
 ## Motivation
 
-Add help to each command
-Place a README.md in scripts that describes how to run each command
+After the from-issue is run, run the change workflow automatically.
+
+After from-issue completes change-request, close the issue.
 
 ## Observed Current Behavior
 

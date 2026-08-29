@@ -1,236 +1,226 @@
 # Baseline Report
 
-Omitted sections: none
+Omitted sections: none.
 
 ## 1. Change-request summary
 
-`CHANGE_REQUEST.md`: "Add help to each command. Place a README.md in scripts
-that describes how to run each command." No change type, current/desired
-behavior, constraints, or success criteria were filled in beyond that.
-`GOOD_FIRST_ISSUES.md` Issue 9 (lines 222–244) is a pre-written spec matching
-part of this request: `--help`/`--version` on `stagegate.sh` and
-`change-workflow.sh` only, printing usage and exiting 0, with unknown args
-printing usage and exiting non-zero. The change request's own wording ("each
-command") is broader than Issue 9 and also covers the four other scripts and a
-new `scripts/README.md`.
+See `CHANGE_REQUEST.md` (seeded from unclehq/stagegate#2). Two asks: (a)
+`from-issue.sh` should trigger the change workflow automatically instead of
+just printing the command to run it; (b) once that workflow finishes, the
+seeding issue should be closed. All other `CHANGE_REQUEST.md` sections
+(Change Type, Observed/Desired Behavior, Reproduction, Constraints, Known
+Files, Out of Scope, Success Criteria) are still unfilled template text — see
+§15.
 
 ## 2. Repository architecture
 
-Stagegate is a set of six standalone bash 3.2-compatible scripts (no shared
-library file) plus markdown prompt templates, orchestrating two human-gated,
-adversarially-reviewed pipelines for AI-generated code:
+Six standalone, mutually-independent bash 3.2 scripts in `scripts/`, each
+resolving its own root and `cd`-ing there (`ROOT="$(cd "$(dirname
+"${BASH_SOURCE[0]}")/.." && pwd)"`):
 
-- `scripts/stagegate.sh` — new-application driver, reads `REQUIREMENTS.md`,
-  resumable state machine keyed by `.workflow/state`.
-- `scripts/change-workflow.sh` — change-request driver, reads
-  `CHANGE_REQUEST.md`, same state-machine pattern plus a cost ledger.
-- `scripts/from-issue.sh` — seeds `CHANGE_REQUEST.md`/`REQUIREMENTS.md` from a
-  GitHub issue.
-- `scripts/workflow.sh` — manual approval helper (`approve-plan`,
-  `approve-review`, `approve-updated-plan`, `status`).
-- `scripts/codex-review-plan.sh`, `scripts/codex-create-checklist.sh` —
-  single-purpose Codex-invoking helpers, no arguments, called by the drivers
-  or by hand.
+| Script | Role |
+|---|---|
+| `stagegate.sh` | new-application state-machine driver (reads `REQUIREMENTS.md`) |
+| `change-workflow.sh` | existing-code change state-machine driver (reads `CHANGE_REQUEST.md`) |
+| `workflow.sh` | manual approval/status helper |
+| `from-issue.sh` | seeds `CHANGE_REQUEST.md` or `REQUIREMENTS.md` from a GitHub issue |
+| `codex-review-plan.sh` | standalone re-run of the adversarial-review stage |
+| `codex-create-checklist.sh` | standalone re-run of the manual-checklist stage |
 
-Each script independently resolves `ROOT` from its own location
-(`scripts/*.sh:4`, all six files) and `cd`s there, so they are relocatable as
-a set but have no shared arg-parsing or usage-printing code to extend.
+`prompts/change/*.md` and `prompts/*.md` hold the per-stage agent prompts;
+`.workflow/` (gitignored) holds runtime state: `state`, `approvals/*.sha256`,
+`logs/`, `cost.tsv`, `change.diff`. No test framework, no CI (`.github/`
+does not exist), no linter config.
 
 ## 3. Relevant code paths
 
-| File | Existing arg handling | Lines |
-|---|---|---|
-| `scripts/from-issue.sh` | `usage()` + `-h`/`--help` check already present | 7–29 |
-| `scripts/workflow.sh` | `case "${1:-}"` with a `*)` fallback that prints usage and `exit 1` for anything unrecognized, including `-h`/`--help`/no args | 37–86 |
-| `scripts/codex-review-plan.sh` | none — `$1` is never read | whole file (73 lines) |
-| `scripts/codex-create-checklist.sh` | none — `$1` is never read | whole file (91 lines) |
-| `scripts/stagegate.sh` | none — no top-level `$1`/`$#`/`$@` reference anywhere in the file | whole file (594 lines) |
-| `scripts/change-workflow.sh` | none — no top-level `$1`/`$#`/`$@` reference anywhere in the file | whole file (675 lines) |
-
-No `scripts/README.md` exists (`ls scripts/*.md` → no matches).
+| Path | Relevance |
+|---|---|
+| `scripts/from-issue.sh:131-152` | mode auto-detection (`--change` vs `--new`) |
+| `scripts/from-issue.sh:158-208` | `write_change_request` — writes `CHANGE_REQUEST.md`, prints suggested next command, returns |
+| `scripts/from-issue.sh:210-298` | `write_new_project_brief` — same shape for the new-app path |
+| `scripts/from-issue.sh:300-303` | dispatch, then script exits |
+| `scripts/change-workflow.sh:181-233` | `human_gate` — the interactive approval primitive |
+| `scripts/change-workflow.sh:507-698` | the state machine itself, `ANALYZE` → `COMPLETE` |
+| `scripts/change-workflow.sh:663-690` | `FINAL_AUDIT` and `COMPLETE` states — where a "done" signal would be read/emitted |
+| `prompts/change/final-audit.md:56-58` | defines the `READY` / `READY WITH NON-BLOCKING ISSUES` / `NOT READY` verdict vocabulary |
+| `README.md:114-133` | documented "Start from a GitHub issue" flow |
+| `README.md:99-113` | documented manual change-request flow (fill in `CHANGE_REQUEST.md` *then* run the driver) |
+| `scripts/README.md:63-82,115-129` | `from-issue.sh` CLI/exit-code contract |
 
 ## 4. Current observable behavior
 
-| ID | Trigger | Current result | Evidence | Must preserve? |
-|---|---|---|---|---|
-| B-01 | `./scripts/from-issue.sh --help` / `-h` / no args | Prints usage to stdout, exits 0 (no-args case) or 0 (explicit `-h`/`--help`); no-args also exits 0 per current code | ran: `./scripts/from-issue.sh --help`, `-h`, and no-args → identical usage text, `exit:0` all three | Yes |
-| B-02 | `./scripts/workflow.sh` with no args, `-h`, or `--help` | Falls into the `*)` case, prints a `Usage:` block, exits 1 | ran all three → identical output, `exit:1` | Yes |
-| B-03 | `./scripts/workflow.sh status` | Prints approval status table, exits 0 | ran → `PROJECT_PLAN.md: NOT APPROVED` etc., `exit:0` | Yes |
-| B-04 | `./scripts/codex-review-plan.sh --help` | `--help` is silently ignored; script runs its precondition checks (`test -s PROJECT_PLAN.md`), which fail because `PROJECT_PLAN.md` does not exist in this repo, so it exits 1 with **no output at all** under `set -e` | ran → no stdout/stderr, `exit:1` | Behavior when preconditions are met must be preserved; the "no help text" behavior is exactly what the change request asks to fix |
-| B-05 | `./scripts/codex-create-checklist.sh --help` | Same pattern: ignored, fails silently on `test -s UPDATED_PROJECT_PLAN.md`, `exit:1`, no output | ran → no stdout/stderr, `exit:1` | Same as B-04 |
-| B-06 | `./scripts/stagegate.sh` / `--help` (no arg parsing exists) | Not executed in this baseline pass — see §11 | static read of full file, no `$1`/`$#`/`getopts`/`usage` match | Existing zero-arg invocation (documented in `README.md:93`) must keep working |
-| B-07 | `./scripts/change-workflow.sh` / `--help` (no arg parsing exists) | Not executed in this baseline pass — see §11 | static read of full file, no `$1`/`$#`/`getopts`/`usage` match | Existing zero-arg invocation (`README.md:111`) must keep working |
+`from-issue.sh <issue> [--change|--new]` fetches issue metadata (via `gh
+issue view`, falling back to `curl` GET for public repos), writes
+`CHANGE_REQUEST.md` or the `REQUIREMENTS.md` project-brief section, prints a
+"Run: ..." hint, and exits — it never invokes `change-workflow.sh` or
+`stagegate.sh` itself (verified: it contains no call to either script or to
+`exec`/`system`-style invocation). It never touches the GitHub issue beyond
+the initial read; there is no `gh issue close`/`gh issue comment` anywhere in
+the repository (only match for "gh issue" is the read at
+`from-issue.sh:86`).
+
+`change-workflow.sh`'s `COMPLETE` state (lines 672-690) prints file names to
+review and the cost ledger, then unconditionally `exit 0`s — it does not
+parse `FINAL_AUDIT.md` for its `READY`/`NOT READY` verdict; that verdict is
+free text written by the reviewer CLI for a human to read.
 
 ## 5. Existing invariants
 
 | ID | Invariant | Current enforcement | Existing test | Confidence |
 |---|---|---|---|---|
-| INV-01 | Every script starts with `set -euo pipefail`, so any unguarded non-zero command or unset-variable read aborts the script immediately with bash's own error, not a custom message | present verbatim at line 2 of all six scripts | none (no test suite in repo) | High |
-| INV-02 | Every script resolves `ROOT` from its own path and `cd`s there before doing anything else, so it works regardless of caller's cwd | `scripts/*.sh:4-5`, all six | none | High |
-| INV-03 | `workflow.sh`'s subcommand dispatch (`approve-plan`, `approve-review`, `approve-updated-plan`, `status`) is a `case "${1:-}"` — any value not matching those four falls through to usage+exit 1 | `scripts/workflow.sh:37-86` | none | High |
-| INV-04 | `from-issue.sh` treats `-h`/`--help` and "no arguments" identically (usage, exit 0) but distinguishes them from an actual issue argument | `scripts/from-issue.sh:26-29` | none | High |
-| INV-05 | `stagegate.sh` and `change-workflow.sh` read all configuration exclusively from environment variables (`WORKFLOW_*`), never from CLI flags | full-file grep, no `$1`/`getopts` outside function-local usages | none | High |
-| INV-06 | Bash 3.2 compatibility is a hard constraint (macOS system bash) — no associative arrays, no `${var^^}`; `stagegate.sh` even has a comment and an `upper()` helper working around this (`stagegate.sh:44-47`) | comments at `stagegate.sh:44`, `README.md:78` | none | High |
+| I-01 | Every stage transition requiring approval blocks on an interactive, exact-word human response; nothing bypasses it | `human_gate()`, `change-workflow.sh:181-233` | none automated (CLAUDE.md rule 1 / "Never bypass a human review gate") | High |
+| I-02 | An approved artifact is SHA-256 pinned; a post-approval edit halts the pipeline | `verify_approval()`, `change-workflow.sh:155-174` | none automated; documented in `README.md:182-200` | High |
+| I-03 | Reviewer-owned files (`ADVERSARIAL_REVIEW.md`, `MANUAL_CHECKLIST.md`, `FINAL_AUDIT.md`) are written only via `run_codex`/`start_codex_bg` | state-machine call sites in `change-workflow.sh` | none automated (structural read) | High |
+| I-04 | Every script is runnable from any CWD via self-relative root resolution | `ROOT=...; cd "$ROOT"` at the top of each script | none automated; manually spot-checked in prior cycle | High |
+| I-05 | `from-issue.sh` never mutates GitHub state — fetch is read-only (`gh issue view` / `curl GET`) | `from-issue.sh:85-92`, no write call anywhere in the file | none automated | High |
+| I-06 | `change-workflow.sh` `COMPLETE` always exits 0, independent of the audit verdict text | `change-workflow.sh:672-690` | none automated | High |
+| I-07 | The documented change-request flow gives a human an editing window on `CHANGE_REQUEST.md` before the driver runs (`README.md` step 2 precedes step 4) | procedural (docs), not code-enforced | none | Medium |
+
+I-05 is the invariant this change request asks to relax (add a GitHub write).
+I-07 is the invariant potentially at risk from "run the change workflow
+automatically" — see §16.
 
 ## 6. Current API, schema, and interface contracts
 
-CLI surface only (no library API). Documented entry points, per `README.md`:
+`from-issue.sh` CLI contract (per `scripts/README.md:63-82,115-129`):
+positional `<issue-number|github-url>`, optional `--change`/`--new`; usage is
+printed to **stdout** in every case. No args or `-h`/`--help` → usage, exit
+0; unrecognized issue arg or unknown flag → usage, exit 1. Verified live
+(see §8/§9).
 
-- `./scripts/stagegate.sh` — zero arguments, all config via `WORKFLOW_*` env vars (README.md:204-242).
-- `./scripts/change-workflow.sh` — zero arguments, `WORKFLOW_TRACK=small` env var for the small track (README.md:60-65).
-- `./scripts/from-issue.sh <issue-number|url> [--change|--new]` (README.md:114-132).
-- `./scripts/workflow.sh {approve-plan|approve-review|approve-updated-plan|status}` (README.md:280-284).
-- `./scripts/codex-review-plan.sh`, `./scripts/codex-create-checklist.sh` — zero arguments, invoked by the drivers or by hand (README.md:280-284).
-
-`README.md` itself is the closest thing to a "how to run each command"
-document today; it describes usage in prose spread across multiple sections
-rather than in a single `scripts/` reference, and it does not mention any
-`--help` or `--version` flag on any script.
+`change-workflow.sh` CLI contract: no positional arguments; `-h`/`--help` →
+usage to stdout, exit 0; `--version` → `0.1.0`, exit 0; unknown argument →
+usage to **stderr**, exit 1. All configuration via `WORKFLOW_*` env vars
+(full table in top-level `README.md` "Configuration"; not restated here).
+State persists in `.workflow/state` as a single bare state-name string,
+defaulting to `ANALYZE` when absent/empty (`get_state()`,
+`change-workflow.sh:127-133`).
 
 ## 7. Existing automated-test coverage
 
-None. No test directory, test framework, or CI config exists in the
-repository (`find` for `*test*` and for `*.yml`/`*.yaml` outside `.git`
-returned nothing).
+None (no test framework, no CI). The prior change cycle (issue #1,
+`CHANGE_TEST_REPORT.md`) validated purely via `bash -n` syntax checks on all
+six scripts and manual invocation of the argument-handling paths
+(help/version/unknown-arg) for each script; `shellcheck` was not installed
+and is not a repo dependency.
 
 ## 8. Exact build and test commands executed
 
-```sh
-bash --version                                   # GNU bash 3.2.57(1) darwin
-command -v shellcheck                            # not found
-git log --oneline -20
-git show --stat HEAD
-ls -la scripts/ && wc -l scripts/*.sh
-grep -n "usage()\|--help\|\"-h\"\|Usage:\|show_help\|print_help" -r scripts
-grep -n 'usage\|--help\|"-h"\|^case\|getopts' scripts/change-workflow.sh
-grep -n 'usage\|--help\|"-h"\|^case\|getopts' scripts/stagegate.sh
-grep -n '\$1\|\$@\|\$#' scripts/change-workflow.sh scripts/stagegate.sh
-ls PROJECT_PLAN.md UPDATED_PROJECT_PLAN.md AUTOMATED_TEST_REPORT.md \
-   CHANGE_PLAN.md UPDATED_CHANGE_PLAN.md                # confirm absent, safe to probe codex-*.sh
-./scripts/workflow.sh                 ; echo "exit:$?"
-./scripts/workflow.sh --help          ; echo "exit:$?"
-./scripts/workflow.sh -h              ; echo "exit:$?"
-./scripts/workflow.sh status          ; echo "exit:$?"
-./scripts/from-issue.sh --help        ; echo "exit:$?"
-./scripts/from-issue.sh -h            ; echo "exit:$?"
-./scripts/from-issue.sh               ; echo "exit:$?"
-./scripts/codex-review-plan.sh --help      ; echo "exit:$?"
-./scripts/codex-create-checklist.sh --help ; echo "exit:$?"
-cat .workflow/state ; ls .workflow/logs ; ls .workflow/speculative
 ```
-
-No formatter, compiler, type checker, or lint tool applies to this repository
-(bash scripts, no `shellcheck` installed, no linter config present).
+for f in scripts/*.sh; do bash -n "$f"; done      # exit 0 for all 6
+command -v gh curl jq shellcheck                  # gh, curl, jq present; shellcheck absent
+./scripts/from-issue.sh                           # usage to stdout, exit 0
+./scripts/from-issue.sh --help                    # usage to stdout, exit 0
+./scripts/from-issue.sh abc                       # "Unrecognized issue argument: abc" + usage to stdout, exit 1
+./scripts/change-workflow.sh --help               # usage to stdout, exit 0
+./scripts/change-workflow.sh --version            # "0.1.0", exit 0
+gh auth status                                     # logged in as brianosaurus, token scope includes `repo`
+gh api repos/unclehq/stagegate/issues/2 --jq '.state,.title'   # "open", "help and close issues"
+git remote -v                                      # origin -> git@github.com:unclehq/stagegate.git
+```
 
 ## 9. Baseline test results
 
-There is no automated test suite to run, so "baseline test results" here means
-the observed outputs of the commands in §8:
-
-- `workflow.sh` (no args / `-h` / `--help`) → usage block, `exit 1` (all three
-  byte-identical).
-- `workflow.sh status` → three-line approval table, all `NOT APPROVED`,
-  `exit 0`.
-- `from-issue.sh` (no args / `-h` / `--help`) → identical usage text,
-  `exit 0` for all three.
-- `codex-review-plan.sh --help` → no output, `exit 1` (fails silently on
-  missing `PROJECT_PLAN.md` before any `--help` handling would occur).
-- `codex-create-checklist.sh --help` → no output, `exit 1` (fails silently on
-  missing `UPDATED_PROJECT_PLAN.md`).
-- `stagegate.sh` and `change-workflow.sh` were **not executed**, including
-  with `--help` — see §11 for why.
+All commands above passed / behaved exactly as documented in
+`scripts/README.md`. No regressions or surprises versus documented behavior.
+Confirmed live against the real remote: issue unclehq/stagegate#2 exists,
+is open, and its title matches `CHANGE_REQUEST.md`'s Summary line; the local
+`gh` session is authenticated with a token that has the `repo` scope
+(sufficient to close issues).
 
 ## 10. Existing failures, warnings, and flaky behavior
 
-None observed in the commands executed. No flakiness applicable — all
-commands run were deterministic, argument-driven, read-only with respect to
-tracked files.
+None observed. `shellcheck` absence is pre-existing and unchanged from the
+prior cycle. No CI pipeline exists to fail.
 
 ## 11. Reproduction result for the reported bug, if applicable
 
-Not a bug; this is a feature/documentation request. The absence of help text
-is confirmed above (§4, §9) for four of six scripts by direct execution.
-
-For `stagegate.sh` and `change-workflow.sh`, I did not execute the scripts
-(with or without `--help`) as part of this baseline, including in this
-repository, because:
-
-- Static inspection (§3, INV-05) shows neither script reads `$1`/`$#`/`$@` at
-  the top level, has any `getopts`/case dispatch on arguments, or checks for
-  `--help`/`-h` anywhere in the file. Any invocation — bare or with any flag —
-  falls straight through to the real state machine.
-- This repository has pre-existing `.workflow/logs/baseline.jsonl` and
-  `requirements.jsonl` from prior real runs of these drivers against this same
-  repo (dogfooding), and no `.workflow/state` file, meaning a bare invocation
-  would start a fresh run at the first state and immediately shell out to the
-  `claude` and/or `codex` CLIs — a real, billed, side-effecting action, not a
-  safe reproduction step.
-- The absence of any argument handling is independently confirmed by
-  exhaustive grep (§3), which is sufficient evidence for a baseline without
-  incurring that cost.
+Not applicable — this is a feature request, not a bug. Note:
+`CHANGE_REQUEST.md`'s "Change Type" line itself is still the unselected
+template (`Feature | Bug Fix | Prototype | ...`); classified here as Feature
+based on the Motivation wording.
 
 ## 12. Likely change surface
 
-- All six files in `scripts/` gain some form of `-h`/`--help` handling (and,
-  per `GOOD_FIRST_ISSUES.md` Issue 9, `--version` on the two main drivers).
-- A new `scripts/README.md` documenting how to run each command.
-- Possibly `README.md`'s "Manual helpers" / configuration sections gain a
-  pointer to the new `scripts/README.md` (not required by the change request,
-  but `CONTRIBUTING.md:79` establishes a convention of updating `README.md`
-  alongside related docs).
+- `scripts/from-issue.sh` — invoke `./scripts/change-workflow.sh` (and/or
+  `./scripts/stagegate.sh`, scope-dependent, see §15) after writing the seed
+  file; add issue-close logic keyed to that run's outcome.
+- `scripts/change-workflow.sh` — possibly needs to expose a machine-readable
+  completion signal (exit code and/or the `FINAL_AUDIT.md` verdict) if
+  `from-issue.sh` is what performs the close, since today `COMPLETE` gives no
+  such signal (I-06).
+- `scripts/README.md`, top-level `README.md` — flow documentation ("Start
+  from a GitHub issue" section currently describes a two-step manual
+  handoff that this change collapses).
 
 ## 13. Regression-sensitive components
 
-- `workflow.sh`'s existing `case "${1:-}"` dispatch (INV-03) — adding
-  `-h`/`--help` handling must not change the `exit 1` fallback behavior for
-  genuinely unknown subcommands, nor change `status`'s output.
-- `from-issue.sh`'s existing `usage()`/`-h`/`--help` handling (INV-04) — must
-  not be duplicated or shadowed by a new global help mechanism.
-- `codex-review-plan.sh` / `codex-create-checklist.sh` — both are invoked
-  automatically by `change-workflow.sh`'s `run_codex` (no flags), so any new
-  argument handling must not change zero-argument behavior.
-- `stagegate.sh` / `change-workflow.sh` state machines — these are the highest
-  blast-radius files in the repo (594 and 675 lines, drive real spend against
-  `claude`/`codex`). Adding `--help`/`--version` must short-circuit before
-  `mkdir -p`, before reading `WORKFLOW_*` env vars for anything other than
-  possibly a version string, and before the `while true` state-machine loop —
-  i.e., as the very first statements after `cd "$ROOT"`.
-- Bash 3.2 compatibility (INV-06) — any new arg-parsing must avoid
-  associative arrays, `${var^^}`, and lazy regex quantifiers (the existing
-  `from-issue.sh` history at `5903a57` shows a bash-3.2 ERE regression that
-  was already hit once).
+- `from-issue.sh` mode-resolution and file-writing logic
+  (`write_change_request`, `write_new_project_brief`) — must keep working
+  standalone/non-auto-run for users who still want to review before running
+  the driver (see I-07 tension in §16).
+- The six-script argument-handling contract in `scripts/README.md:115-129`
+  (help/version/unknown-arg exit codes and stdout-vs-stderr routing) — easy
+  to break by adding new flags carelessly.
+- `change-workflow.sh`'s human-gate/approval-hash flow (I-01, I-02) — must
+  not be weakened or bypassed by the new automatic invocation.
 
 ## 14. Areas explicitly outside the change
 
-`CHANGE_REQUEST.md`'s own "Out of Scope" section is unfilled. No file lists an
-explicit exclusion. Treating as out of scope by default, absent a spec:
-prompt files under `prompts/`, the state-machine logic itself, cost-ledger
-format, and the approval/hash mechanism — none of these are "help text."
+`stagegate.sh` internals, `codex-review-plan.sh`, `codex-create-checklist.sh`,
+`workflow.sh`, and prompt file contents under `prompts/` are not implicated
+by the request text and are assumed out of scope pending CHANGE_SPEC
+confirmation.
 
 ## 15. Unknowns and assumptions
 
-- CHANGE_REQUEST.md does not specify exact `--help` wording, whether
-  `--version` is in scope (only `GOOD_FIRST_ISSUES.md` Issue 9 mentions it),
-  or where `scripts/README.md` should live relative to the existing
-  `README.md` prose. Assumption: follow Issue 9's acceptance criteria for
-  `stagegate.sh`/`change-workflow.sh` (help exits 0, unknown args exit
-  non-zero) and extend the same pattern to the remaining four scripts for
-  consistency, since the change request says "each command."
-- Assumption: `codex-review-plan.sh` and `codex-create-checklist.sh` take no
-  positional arguments today and won't gain any beyond `-h`/`--help` — adding
-  full argument parsing to them is not implied by the change request.
-- Assumption: a starting version string of `0.1.0` (per Issue 9) is
-  acceptable if `--version` is implemented, since no version currently exists
-  anywhere in the repo (no `VERSION` file, no version string in any script).
+- `CHANGE_REQUEST.md` leaves Change Type, Observed/Desired Behavior,
+  Reproduction, Constraints, Known Relevant Files, Out of Scope, and Success
+  Criteria as unfilled template text. The change surface above is inferred
+  solely from Summary + Motivation.
+- Unclear whether "run the change workflow automatically" also covers the
+  `--new` path (auto-running `stagegate.sh`), or only `--change`
+  (`change-workflow.sh`). Motivation text says "change workflow" and "close
+  issue... completes change-request" specifically — read as `--change`-only
+  unless CHANGE_SPEC says otherwise.
+- Unclear which run outcome should trigger a close: `COMPLETE` is reached
+  regardless of whether `FINAL_AUDIT.md` says `READY`, `READY WITH
+  NON-BLOCKING ISSUES`, or `NOT READY` (I-06). Closing on any `COMPLETE`
+  could close an issue whose change was judged `NOT READY`.
+- No file in the repo currently persists which issue (owner/repo/number)
+  seeded a given `CHANGE_REQUEST.md` in a machine-readable way — only a
+  Markdown link in the file's header (`from-issue.sh:162`). If the close
+  step runs in a process separate from `from-issue.sh` (e.g., triggered from
+  inside `change-workflow.sh`'s `COMPLETE` state), that identity has to be
+  parsed back out or persisted to a new state file.
+- Unclear whether closing should also leave a comment (e.g., linking
+  `.workflow/change.diff` or the audit verdict) or close silently.
+- The `curl`-only fallback path (unauthenticated, public repos) documented
+  in `from-issue.sh` cannot close issues; behavior when only `curl` is
+  available and a close is requested is undefined by the request.
 
 ## 16. Initial risk assessment
 
-Low technical risk: this is additive CLI surface (new flags, new doc file) on
-scripts with no test suite and no consumers other than a human running them
-directly or the drivers invoking the codex-* helpers with zero arguments. The
-main risk is scope ambiguity (six scripts vs. two, per §1) and accidentally
-changing exit-code/output behavior for existing flags/subcommands (`workflow.sh`
-dispatch, `from-issue.sh` usage) while adding the new help path. No risk of
-data loss or irreversible action from the change itself; the risk documented
-in §11 is specific to *verifying* `stagegate.sh`/`change-workflow.sh`, not to
-implementing the change.
+- **Approval-gate tension (I-07):** the documented flow puts a human editing
+  window between seeding `CHANGE_REQUEST.md` and starting the driver
+  (`README.md` step 2 before step 4). `CHANGE_REQUEST.md` in this very repo
+  is evidence why that window matters: even after being "seeded," most of
+  its sections are still placeholder text. Auto-running the driver
+  immediately after seeding risks kicking off a real, budget-consuming
+  (`WORKFLOW_BUDGET_*`), multi-stage agent pipeline against an unreviewed,
+  templated change request — in tension with CLAUDE.md's "Inspect existing
+  code before proposing changes" and the project's core "human-gated"
+  premise. This is a design decision for CHANGE_SPEC/CHANGE_PLAN, not
+  resolved here.
+- **Wrong-outcome close:** closing on any `COMPLETE` rather than gating on
+  the `FINAL_AUDIT.md` verdict could close an issue for a change that was
+  judged `NOT READY`.
+- **Side-effect scope creep:** `from-issue.sh` today is side-effect-limited
+  (writes one local file, one read-only network call). Chaining it to
+  `change-workflow.sh` changes it into a long-running, real-money-spending,
+  now GitHub-write-capable script — a meaningful behavior/trust change worth
+  making explicit and constrained rather than implicit.
+- **Auth/tooling gap:** the `curl`-only fetch path has no credentialed
+  equivalent for closing; a close request in that path will need explicit
+  failure/skip behavior rather than a silent no-op.

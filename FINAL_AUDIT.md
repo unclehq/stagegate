@@ -1,49 +1,97 @@
-ID: F-001
+ID: FA-001
+Severity: Critical
+Evidence: Authoritative `.workflow/change.diff` has no diff entries for `scripts/lib/audit-verdict.sh`, `scripts/tests/audit-verdict-test.sh`, or `scripts/tests/close-flow-test.sh` (diff headers end with source files at lines 2735 and 2895), although `.workflow/change.diff:2755` makes the driver source the missing library and `IMPLEMENTATION_NOTES.md:18-20` claims all three were added.
+Affected behavior: Applying the authoritative change produces a driver that fails during normal startup and omits all new automated coverage.
+Affected invariant: I-04, I-08
+Required correction: Include the three untracked files in the authoritative diff and rerun verification against the complete, reconstructable change.
+Blocks completion: Yes
+
+ID: FA-002
+Severity: Critical
+Evidence: `scripts/change-workflow.sh:156-179` lets multiple contenders independently observe a stale lock and execute `rm -rf`; one contender can delete a lock newly acquired by another between those operations, allowing both drivers to proceed. Tests at `scripts/tests/close-flow-test.sh:363-390` exercise only one live holder or one stale-lock reclaimer, while `VERIFICATION_REPORT.md:69` claims I-10 PASS.
+Affected behavior: Concurrent workflows can again interleave state, audit, verdict, and close operations.
+Affected invariant: I-08, I-10
+Required correction: Make stale-lock reclamation ownership-safe or fail closed on stale locks, and add a coordinated two-reclaimer concurrency test.
+Blocks completion: Yes
+
+ID: FA-003
 Severity: High
-Evidence: CHANGE_SPEC.md:42 requires zero-argument `workflow.sh` to exit 0; `.workflow/change.diff`:163-167 omits `0:` and reaches `mkdir -p`; IMPLEMENTATION_NOTES.md:34-58 acknowledges AC-06 remains unmet, while VERIFICATION_REPORT.md:103-108 recommends completion.
-Affected behavior: `workflow.sh` with no arguments exits 1 and creates `.workflow/approvals`.
-Affected invariant: IV-03; AC-06/BH-13.
-Required correction: Obtain the required approval and implement/test the zero-argument branch, or formally revise the acceptance criterion before completion.
+Evidence: `CHANGE_TEST_REPORT.md:16` claims COMPLETE reseeding is covered, but `scripts/tests/close-flow-test.sh:347-352` asserts only `SEED_WRITE`. In production, `scripts/from-issue.sh:38-43,519-527` accepts and rewrites a request at COMPLETE, while `scripts/change-workflow.sh:601-607,781-798` immediately dispatches COMPLETE and exits without entering ANALYZE.
+Affected behavior: After one completed workflow, the next confirmed issue does not run the change pipeline and cannot close.
+Affected invariant: I-07, I-08, I-11
+Required correction: Define and implement an explicit completed-run restart transition to ANALYZE, then test the real driver reaching ANALYZE and producing a current-run verdict.
 Blocks completion: Yes
 
-ID: F-002
+ID: FA-004
 Severity: High
-Evidence: `.workflow/change.diff`:1-215 adds a link to `scripts/README.md` but contains no diff entry for that new file; IMPLEMENTATION_NOTES.md:24 and VERIFICATION_REPORT.md:49 nevertheless treat AC-08 as delivered and passed.
-Affected behavior: Applying the authoritative change produces a documentation link whose target is absent.
-Affected invariant: AC-08/BH-17; authoritative change-package completeness.
-Required correction: Include `scripts/README.md` in the authoritative diff and rerun verification against exactly that recorded change.
+Evidence: `VERIFICATION_REPORT.md:39` marks MC-020 PASS for fresh/restartable COMPLETE state while admitting its only assertion was `SEED_WRITE`; `UPDATED_CHANGE_PLAN.md:34,99,118` requires COMPLETE restart to reach ANALYZE and rewrite origin, which the implementation never does.
+Affected behavior: The claimed completed-state restart behavior is unverified and contradicted by dispatch behavior.
+Affected invariant: I-11
+Required correction: Correct the state transition and execute MC-020 through actual driver dispatch rather than stopping at the seed decision.
 Blocks completion: Yes
 
-ID: F-003
-Severity: Medium
-Evidence: VERIFICATION_REPORT.md:19 marks MC-008 PASS for APPROVE, missing-file, and REJECT scenarios across all three approval subcommands; `.workflow/logs/execute-checklist.jsonl`:81-99 shows missing-file and REJECT were run only for `approve-plan`, while the other two received only APPROVE checks and no resulting-hash comparison. VERIFICATION_REPORT.md:54-56 repeats the unsupported full-coverage claim.
-Affected behavior: Regression preservation of `approve-review` and `approve-updated-plan` failure/rejection paths and approval hashes.
-Affected invariant: BH-14; IV-03; AC-06 compatibility.
-Required correction: Execute every MC-008 scenario for every approval subcommand, compare generated hashes, and correct the report.
+ID: FA-005
+Severity: High
+Evidence: `VERIFICATION_REPORT.md:20,23-24,30,38,43,47` records the real pipeline, real close, resume, preserved internal gates, rollback, and real NOT_READY integration as NOT RUN; its recommendation at line 81 explicitly says not to declare the change complete.
+Affected behavior: AC-1, AC-3, portions of AC-4, same-origin recovery, and preserved workflow behavior lack required end-to-end evidence.
+Affected invariant: I-01, I-02, I-03, I-05, I-08, I-11
+Required correction: Run the remaining blocking checks in a disposable checkout and issue with explicit authorization for pipeline cost and GitHub mutation.
 Blocks completion: Yes
 
-ID: F-004
+ID: FA-006
 Severity: Medium
-Evidence: scripts/README.md:131-133 states recognized flags with trailing arguments are rejected, but scripts/from-issue.sh:26-28 accepts `--help` or `-h` regardless of trailing arguments; VERIFICATION_REPORT.md:22 marks the documentation comparison PASS without testing this exception.
-Affected behavior: Documented behavior of `from-issue.sh --help extra` and `from-issue.sh -h extra`.
-Affected invariant: BH-16; AC-08 documentation accuracy.
-Required correction: Qualify the trailing-argument rule for `from-issue.sh` or obtain approval to change its preserved behavior, then add regression coverage.
+Evidence: `CHANGE_SPEC.md:46-50`, `UPDATED_CHANGE_PLAN.md:139`, and `README.md:130-134` require or document printing the populated request, but `scripts/from-issue.sh:80-104` prints only a banner, filenames, and editing commands. `VERIFICATION_REPORT.md:41` nevertheless marks documentation consistency PASS.
+Affected behavior: Users are promised an inline display of the seeded request but do not receive it.
+Affected invariant: I-07
+Required correction: Print `CHANGE_REQUEST.md` before confirmation or revise and reapprove the specification and documentation.
 Blocks completion: Yes
 
-ID: F-005
+ID: FA-007
 Severity: Medium
-Evidence: CHANGE_TEST_REPORT.md:126 marks MC-06 PASS and says `.workflow` remained absent after T-14; `.workflow/logs/implementation.jsonl`:130-131 shows T-14 deleted `.workflow` after each zero-argument run without inspecting it, while `.workflow/change.diff`:134-143 shows zero arguments necessarily continue to directory creation.
-Affected behavior: Verification of zero-argument driver filesystem and cost-ledger effects.
-Affected invariant: Regression-containment evidence for BH-04/BH-08.
-Required correction: Remove the unsupported absence claim or rerun T-14 comparing filesystem, logs, and cost-ledger state before cleanup.
+Evidence: `CHANGE_TEST_REPORT.md:55-57` labels an execution of only the pre-change `--new` path as a rollback test, while `VERIFICATION_REPORT.md:43` records MC-024—the actual revert, leftover-metadata, and post-revert smoke check—as NOT RUN.
+Affected behavior: Rollback of the changed `--change` and driver paths is not verified.
+Affected invariant: I-05, I-06
+Required correction: Perform the planned disposable revert with new metadata retained, then smoke-test the restored change workflow and cleanup procedure.
+Blocks completion: Yes
+
+ID: FA-008
+Severity: Medium
+Evidence: `scripts/from-issue.sh:213-219` adds the test-only `STAGEGATE_FROM_ISSUE_SOURCE_ONLY=1` production branch, which silently exits before help, parsing, fetch, or seeding; `IMPLEMENTATION_NOTES.md:47` identifies it as a testing deviation not present in the approved public interface.
+Affected behavior: An ambient test variable can silently turn every production invocation into a successful no-op.
+Affected invariant: I-04, I-07
+Required correction: Extract sourceable flow functions into a library used by both production and tests, eliminating the hidden production bypass.
 Blocks completion: No
 
-ID: F-006
+ID: FA-009
 Severity: Medium
-Evidence: VERIFICATION_REPORT.md:32 marks MC-022 PASS with “no `.workflow` mutation” across roughly 30 invocations, contradicting its own MC-017 result at line 27; MANUAL_CHECKLIST.md:233-243 required process monitoring and filesystem/log/cost manifests, which were not captured.
-Affected behavior: Assurance that guarded help/version/error paths cannot start external work or mutate workflow state.
-Affected invariant: IV-07/IV-08.
-Required correction: Scope the claim only to the actually checked invocations and execute the prescribed monitoring/manifest checks before marking MC-022 PASS.
+Evidence: `CHANGE_TEST_REPORT.md:16` claims piped stdin was verified as blocking, but `scripts/tests/close-flow-test.sh:205-212` queues `RUN` before starting the process and never observes it waiting without input.
+Affected behavior: The approved non-interactive compatibility break lacks executed blocking evidence.
+Affected invariant: I-07
+Required correction: Add a FIFO/process-liveness test that starts with no input, proves the process remains blocked, then supplies `RUN`.
+Blocks completion: No
+
+ID: FA-010
+Severity: Medium
+Evidence: `VERIFICATION_REPORT.md:22` marks MC-003 PASS for blocking behavior while explicitly stating input was already queued; this cannot demonstrate that the process waited.
+Affected behavior: Non-TTY prompt blocking is claimed without executing the required wait scenario.
+Affected invariant: I-07
+Required correction: Execute MC-003 as written with delayed FIFO input and capture process-liveness evidence.
+Blocks completion: No
+
+ID: FA-011
+Severity: Medium
+Evidence: `CHANGE_TEST_REPORT.md:23` claims standalone origin preflight is unaffected based on `preflight-standalone-unaffected`, but that test sets `WORKFLOW_TRACK=bogus` (`scripts/tests/close-flow-test.sh:409-416`), causing validation at `scripts/change-workflow.sh:591-594` to exit before preflight at lines 598-599.
+Affected behavior: Standalone compatibility was not exercised through the new preflight.
+Affected invariant: I-04, I-11
+Required correction: Run a valid standalone state with agent/reviewer stubs and no origin environment through lock acquisition and origin preflight.
+Blocks completion: No
+
+ID: FA-012
+Severity: Medium
+Evidence: `VERIFICATION_REPORT.md:40` marks MC-021 PASS using the same invalid-track early exit and seed-only fixtures; neither demonstrates standalone traversal through preflight nor safe issue-seeded restart from COMPLETE.
+Affected behavior: Legacy/additive-state compatibility is overstated.
+Affected invariant: I-06, I-11
+Required correction: Exercise valid legacy standalone and issue-seeded states through actual driver dispatch and compare preserved state formats.
 Blocks completion: No
 
 NOT READY

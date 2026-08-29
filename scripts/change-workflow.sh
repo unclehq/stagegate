@@ -33,6 +33,9 @@ LOG_DIR="$STATE_DIR/logs"
 STATE_FILE="$STATE_DIR/state"
 SESSION_FILE="$STATE_DIR/session-head"
 LEDGER_FILE="$STATE_DIR/cost.tsv"
+LOCK_DIR="$STATE_DIR/lock"
+ORIGIN_FILE="$STATE_DIR/origin"
+VERDICT_FILE="$STATE_DIR/audit-verdict"
 
 mkdir -p "$APPROVAL_DIR" "$LOG_DIR"
 
@@ -113,6 +116,10 @@ hash_file() {
     shasum -a 256 "$1" | awk '{print $1}'
 }
 
+# Pure FINAL_AUDIT.md verdict classifier, shared with scripts/tests/. Sourced
+# self-relative so the driver still runs from any CWD.
+. "$ROOT/scripts/lib/audit-verdict.sh"
+
 require_file() {
     if [[ ! -s "$1" ]]; then
         echo "Required file missing or empty: $1"
@@ -129,6 +136,90 @@ get_state() {
         cat "$STATE_FILE"
     else
         echo ANALYZE
+    fi
+}
+
+# --- Single-writer lock -----------------------------------------------------
+# One run owns a checkout's .workflow/ for its whole lifetime. mkdir is atomic,
+# so it is the lock primitive; the pid file only exists to detect a lock left
+# behind by a killed run.
+
+LOCK_HELD=0
+
+release_lock() {
+    if [[ "$LOCK_HELD" == "1" ]]; then
+        LOCK_HELD=0
+        rm -rf "$LOCK_DIR"
+    fi
+}
+
+acquire_lock() {
+    local attempt holder
+    for attempt in 1 2; do
+        if mkdir "$LOCK_DIR" 2>/dev/null; then
+            printf '%s\n' "$$" > "$LOCK_DIR/pid"
+            LOCK_HELD=1
+            trap 'cleanup_bg; release_lock' EXIT
+            return 0
+        fi
+
+        holder=""
+        if [[ -s "$LOCK_DIR/pid" ]]; then
+            holder="$(cat "$LOCK_DIR/pid")"
+        fi
+
+        if [[ -n "$holder" ]] && kill -0 "$holder" 2>/dev/null; then
+            echo "Refusing to start: another change-workflow.sh run (pid $holder) holds this checkout."
+            echo "Wait for it to finish, or remove $LOCK_DIR if that process is gone."
+            exit 1
+        fi
+
+        echo "Clearing stale lock $LOCK_DIR (pid ${holder:-unknown} is not running)."
+        rm -rf "$LOCK_DIR"
+    done
+
+    echo "Refusing to start: could not acquire $LOCK_DIR."
+    exit 1
+}
+
+# --- Origin binding ---------------------------------------------------------
+# .workflow/origin binds in-flight state to one (repo, issue) so a resumed run
+# cannot act on — or later close — a different issue's work. Enforced only when
+# the driver was launched by from-issue.sh, which exports STAGEGATE_ORIGIN_*; a
+# human running the driver by hand is unaffected.
+
+origin_preflight() {
+    local repo="${STAGEGATE_ORIGIN_REPO:-}"
+    local issue="${STAGEGATE_ORIGIN_ISSUE:-}"
+    local state owner
+
+    if [[ -z "$repo" || -z "$issue" ]]; then
+        return 0
+    fi
+
+    state="$(get_state)"
+    if [[ ! -s "$STATE_FILE" || "$state" == "COMPLETE" ]]; then
+        return 0
+    fi
+
+    if [[ ! -s "$ORIGIN_FILE" ]]; then
+        echo "Refusing to resume: state is '$state' but $ORIGIN_FILE does not exist,"
+        echo "so that state cannot be proven to belong to $repo#$issue."
+        exit 1
+    fi
+
+    owner="$(cat "$ORIGIN_FILE")"
+    if [[ "$owner" != "$(printf '%s\t%s' "$repo" "$issue")" ]]; then
+        echo "Refusing to resume: this checkout is mid-run (state '$state') for another issue."
+        echo "  $ORIGIN_FILE owner: $owner"
+        echo "  this invocation:    $(printf '%s\t%s' "$repo" "$issue")"
+        exit 1
+    fi
+}
+
+write_origin() {
+    if [[ -n "${STAGEGATE_ORIGIN_REPO:-}" && -n "${STAGEGATE_ORIGIN_ISSUE:-}" ]]; then
+        printf '%s\t%s\n' "$STAGEGATE_ORIGIN_REPO" "$STAGEGATE_ORIGIN_ISSUE" > "$ORIGIN_FILE"
     fi
 }
 
@@ -504,6 +595,9 @@ esac
 
 echo "Track: $TRACK"
 
+acquire_lock
+origin_preflight
+
 while true; do
     state="$(get_state)"
 
@@ -513,6 +607,8 @@ while true; do
     case "$state" in
         ANALYZE)
             require_file CHANGE_REQUEST.md
+            # A fresh run legitimately claims this checkout for its issue.
+            write_origin
 
             if [[ "$TRACK" == "small" ]]; then
                 # One call writes all three analysis artifacts, so downstream
@@ -661,11 +757,24 @@ while true; do
             ;;
 
         FINAL_AUDIT)
+            # Remove any prior audit first: run_codex's require_file then treats
+            # the file's existence as proof this invocation produced it, so a
+            # reviewer call that exits 0 without writing cannot be read as fresh.
+            rm -f FINAL_AUDIT.md
             run_codex \
                 prompts/change/final-audit.md \
                 FINAL_AUDIT.md \
                 final-audit \
                 "$CODEX_EFFORT_AUDIT"
+
+            audit_class="$(classify_audit_verdict FINAL_AUDIT.md)"
+            printf '%s\t%s\t%s\n' \
+                "${STAGEGATE_RUN_ID:--}" \
+                "$audit_class" \
+                "$(hash_file FINAL_AUDIT.md)" \
+                > "$VERDICT_FILE"
+            echo "Audit verdict: $audit_class"
+
             set_state COMPLETE
             ;;
 
