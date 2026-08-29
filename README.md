@@ -283,6 +283,9 @@ over, delete `.workflow/` and the generated `*.md` artifacts.
 the unified driver and record approvals in the same place; use them only when
 running stages piecemeal.
 
+See [`scripts/README.md`](scripts/README.md) for the exact invocation syntax
+of all six scripts.
+
 ---
 
 ## Documentation

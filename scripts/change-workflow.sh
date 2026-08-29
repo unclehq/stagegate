@@ -4,6 +4,29 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+STAGEGATE_VERSION="0.1.0"
+
+usage() {
+    cat <<'EOF'
+Usage: change-workflow.sh [-h|--help] [--version]
+
+Run the human-gated existing-code change workflow from CHANGE_REQUEST.md. The
+driver is a resumable state machine; re-run it to continue from the current
+stage.
+
+Takes no positional arguments; all configuration is via WORKFLOW_* environment
+variables (see scripts/README.md). Seed CHANGE_REQUEST.md from a GitHub issue
+with ./scripts/from-issue.sh.
+EOF
+}
+
+case "$#:${1:-}" in
+    0:)                 ;;
+    1:-h|1:--help)      usage; exit 0 ;;
+    1:--version)        printf '%s\n' "$STAGEGATE_VERSION"; exit 0 ;;
+    *)                  printf 'Unknown argument: %s\n' "${1:-}" >&2; usage >&2; exit 1 ;;
+esac
+
 STATE_DIR=".workflow"
 APPROVAL_DIR="$STATE_DIR/approvals"
 LOG_DIR="$STATE_DIR/logs"

@@ -4,6 +4,21 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+usage() {
+    cat <<'USAGE'
+Usage:
+
+  ./scripts/workflow.sh approve-plan
+  ./scripts/workflow.sh approve-review
+  ./scripts/workflow.sh approve-updated-plan
+  ./scripts/workflow.sh status
+USAGE
+}
+
+case "$#:${1:-}" in
+    1:-h|1:--help) usage; exit 0 ;;
+esac
+
 mkdir -p .workflow/approvals
 
 hash_file() {
@@ -34,24 +49,24 @@ approve_file() {
     echo "Approved $file"
 }
 
-case "${1:-}" in
-    approve-plan)
+case "$#:${1:-}" in
+    1:approve-plan)
         approve_file PROJECT_PLAN.md PROJECT_PLAN
         echo "Next: ask the agent to run Stage 2."
         ;;
 
-    approve-review)
+    1:approve-review)
         approve_file ADVERSARIAL_REVIEW.md ADVERSARIAL_REVIEW
         echo "Next: ask the agent to create UPDATED_PROJECT_PLAN.md."
         ;;
 
-    approve-updated-plan)
+    1:approve-updated-plan)
         approve_file UPDATED_PROJECT_PLAN.md UPDATED_PROJECT_PLAN
         echo "Updated plan approved."
         echo "The agent may now build and continue through verification."
         ;;
 
-    status)
+    1:status)
         echo "Approval status:"
         for item in PROJECT_PLAN ADVERSARIAL_REVIEW UPDATED_PROJECT_PLAN; do
             approval=".workflow/approvals/${item}.sha256"
@@ -73,14 +88,7 @@ case "${1:-}" in
         ;;
 
     *)
-        cat <<'USAGE'
-Usage:
-
-  ./scripts/workflow.sh approve-plan
-  ./scripts/workflow.sh approve-review
-  ./scripts/workflow.sh approve-updated-plan
-  ./scripts/workflow.sh status
-USAGE
+        usage
         exit 1
         ;;
 esac

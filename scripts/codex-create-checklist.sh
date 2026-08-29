@@ -4,6 +4,27 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+usage() {
+    cat <<'EOF'
+Usage: codex-create-checklist.sh [-h|--help]
+
+Run the reviewer CLI against the approved UPDATED_PROJECT_PLAN.md and the
+automated-test report, and write MANUAL_CHECKLIST.md (Stage 6 of the
+new-application workflow).
+
+Takes no positional arguments. Requires REQUIREMENTS.md,
+UPDATED_PROJECT_PLAN.md, AUTOMATED_TEST_REPORT.md, and a matching approval
+record in .workflow/approvals/UPDATED_PROJECT_PLAN.sha256.
+Configuration is via WORKFLOW_* environment variables (see scripts/README.md).
+EOF
+}
+
+case "$#:${1:-}" in
+    0:)            ;;
+    1:-h|1:--help) usage; exit 0 ;;
+    *)             printf 'Unknown argument: %s\n' "${1:-}" >&2; usage >&2; exit 1 ;;
+esac
+
 test -s REQUIREMENTS.md
 test -s UPDATED_PROJECT_PLAN.md
 test -s AUTOMATED_TEST_REPORT.md

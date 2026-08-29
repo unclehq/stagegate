@@ -4,6 +4,25 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+usage() {
+    cat <<'EOF'
+Usage: codex-review-plan.sh [-h|--help]
+
+Run the reviewer CLI against the approved PROJECT_PLAN.md and write
+ADVERSARIAL_REVIEW.md (Stage 2 of the new-application workflow).
+
+Takes no positional arguments. Requires REQUIREMENTS.md, PROJECT_PLAN.md, and
+a matching approval record in .workflow/approvals/PROJECT_PLAN.sha256.
+Configuration is via WORKFLOW_* environment variables (see scripts/README.md).
+EOF
+}
+
+case "$#:${1:-}" in
+    0:)            ;;
+    1:-h|1:--help) usage; exit 0 ;;
+    *)             printf 'Unknown argument: %s\n' "${1:-}" >&2; usage >&2; exit 1 ;;
+esac
+
 test -s REQUIREMENTS.md
 test -s PROJECT_PLAN.md
 test -s .workflow/approvals/PROJECT_PLAN.sha256
