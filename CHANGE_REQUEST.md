@@ -1,16 +1,19 @@
 # Change Request
 
+Seeded from [unclehq/stagegate#1](https://github.com/unclehq/stagegate/issues/1).
+
 ## Change Type
 
 Feature | Bug Fix | Prototype | Refactor | Performance | Security | Upgrade
 
 ## Summary
 
-Describe the requested change.
+Help
 
 ## Motivation
 
-Explain why the change is needed.
+Add help to each command
+Place a README.md in scripts that describes how to run each command
 
 ## Observed Current Behavior
 

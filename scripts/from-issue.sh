@@ -60,8 +60,12 @@ elif [[ "$ISSUE_ARG" =~ ^([0-9]+)$ ]]; then
         echo "No git remote found. Provide a full GitHub URL."
         exit 1
     fi
-    # Handle both https and ssh remotes.
-    if [[ "$REMOTE_URL" =~ github\.com[:/]([^/]+)/([^/]+?)(\.git)?$ ]]; then
+    # Handle both https and ssh remotes. Strip any trailing slash and the
+    # optional .git suffix first: bash uses POSIX ERE, which has no lazy
+    # quantifier, so "([^/]+?)(\.git)?$" fails to compile on bash 3.2.
+    REMOTE_URL="${REMOTE_URL%/}"
+    REMOTE_URL="${REMOTE_URL%.git}"
+    if [[ "$REMOTE_URL" =~ github\.com[:/]+([^/]+)/([^/]+)$ ]]; then
         OWNER="${BASH_REMATCH[1]}"
         REPO="${BASH_REMATCH[2]}"
     else
@@ -79,7 +83,7 @@ fi
 # ---------------------------------------------------------------------------
 
 fetch_with_gh() {
-    gh issue view "$ISSUE_NUM" --repo "$OWNER/$REPO" --json title,body,htmlUrl,state,labels 2>/dev/null
+    gh issue view "$ISSUE_NUM" --repo "$OWNER/$REPO" --json title,body,url,state,labels 2>/dev/null
 }
 
 fetch_with_curl() {
@@ -104,11 +108,12 @@ fi
 if command -v python3 >/dev/null 2>&1; then
     TITLE="$(printf '%s' "$ISSUE_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("title",""))')"
     BODY="$(printf '%s' "$ISSUE_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("body",""))')"
-    URL="$(printf '%s' "$ISSUE_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("html_url",sys.argv[1]))' "https://github.com/$OWNER/$REPO/issues/$ISSUE_NUM")"
+    URL="$(printf '%s' "$ISSUE_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("html_url") or d.get("url") or sys.argv[1])' "https://github.com/$OWNER/$REPO/issues/$ISSUE_NUM")"
 elif command -v jq >/dev/null 2>&1; then
     TITLE="$(printf '%s' "$ISSUE_JSON" | jq -r '.title // empty')"
     BODY="$(printf '%s' "$ISSUE_JSON" | jq -r '.body // empty')"
-    URL="$(printf '%s' "$ISSUE_JSON" | jq -r '.html_url // empty')"
+    URL="$(printf '%s' "$ISSUE_JSON" | jq -r '.html_url // .url // empty')"
+    [[ -n "$URL" ]] || URL="https://github.com/$OWNER/$REPO/issues/$ISSUE_NUM"
 else
     echo "Need python3 or jq to parse the GitHub response."
     exit 1
