@@ -1,346 +1,464 @@
 # Manual Verification Checklist
 
-Base checks: 24; resolved: 0; added: 4; removed: 0
+Base checks: 28; resolved: 1; added: 7; removed: 1
 
-Check ID: MC-001  
-Priority: P0  
-Behavior classification: MODIFY  
-Related behavior: B-01, B-02; AC-1 — seed, display, confirm, and run the change workflow in one invocation  
-Related invariant: I-07 — preserve the human review/editing window before driver execution  
-Preconditions: Scratch checkout with empty/absent `.workflow/state`; authenticated `gh`; dedicated open test issue; terminal stdin; capture stdout, stderr, exit code, process tree, and timestamps  
-Exact action: Run `./scripts/from-issue.sh <test-issue> --change`; verify the populated `CHANGE_REQUEST.md` is displayed and the process waits at the exact-word prompt; inspect or edit the file before entering the exact confirmation word; confirm and allow the driver to begin  
-Expected result: The request is seeded before the prompt; no driver starts before exact confirmation; after confirmation, `change-workflow.sh` starts within the same invocation and its output streams to the caller; the prompt includes the specified pre-flight reminder; the former success-path `Run:` hint is absent  
-Evidence to capture: Full transcript, timestamps showing seed/prompt/driver order, process tree, seeded file snapshot, and exit code  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-001
+Priority: P0
+Behavior classification: MODIFY
+Related behavior: BEH-B — issue-bound change-workflow state uses `<issue>:<STAGE>`
+Related invariant: INV-1
+Preconditions: Disposable checkout; authenticated issue binding for issue 42; workflow positioned immediately before a stage transition
+Exact action: Run `change-workflow.sh` through one transition, then inspect `.workflow/state`; repeat through completion
+Expected result: Each written state is `42:<STAGE>`; stage names and order remain `ANALYZE → PLAN → UPDATED_PLAN → IMPLEMENT → CHECKLIST → EXECUTE_CHECKLIST → FINAL_AUDIT → COMPLETE`
+Evidence to capture: Commands, exit codes, and state contents after each transition
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-002  
-Priority: P0  
-Behavior classification: ADD  
-Related behavior: B-03; AC-2 — decline or abort without invoking the driver or GitHub write  
-Related invariant: I-05, I-07 — GitHub mutation remains gated and the review window is effective  
-Preconditions: Fresh scratch checkout; dedicated open test issue; GitHub state and comment count recorded; driver invocation observable through a harmless stub or process tracing  
-Exact action: Run `from-issue.sh <test-issue> --change` separately with an explicit decline, an empty line, a wrong word, and EOF at the confirmation prompt  
-Expected result: Each case is treated as decline, exits 0, leaves the newly written `CHANGE_REQUEST.md` intact, does not invoke `change-workflow.sh`, creates no `.workflow/origin`, makes no GitHub write, and prints the manual `Run: ./scripts/change-workflow.sh` hint  
-Evidence to capture: Transcript and exit code for each input, file hashes before/after, invocation trace, `.workflow/` listing, issue state, and comment count  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-002
+Priority: P0
+Behavior classification: MODIFY / BACKWARD COMPATIBILITY
+Related behavior: BEH-B — tolerant reading of legacy bare state
+Related invariant: INV-1
+Preconditions: Disposable checkout with a valid matching origin; reusable fixtures for each legacy bare stage token
+Exact action: Before separate driver invocations, write each bare stage token from `ANALYZE` through `COMPLETE` to `.workflow/state` and resume the workflow
+Expected result: Every valid bare token is accepted and dispatches the corresponding stage; bare `FINAL_AUDIT` can complete; bare `COMPLETE` exits normally; subsequent issue-bound writes may use the prefixed format
+Evidence to capture: Initial state, invoked command, stage-dispatch output, exit code, and resulting state for each token
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-003  
-Priority: P0  
-Behavior classification: MODIFY / BACKWARD-COMPATIBILITY BREAK  
-Related behavior: B-01, B-02 — non-interactive callers receive the same confirmation gate  
-Related invariant: I-07 — no TTY-based bypass of confirmation  
-Preconditions: Fresh scratch checkout; dedicated test issue; controllable pipe or FIFO for stdin; timeout/process-observation facility  
-Exact action: Start `from-issue.sh <test-issue> --change` with stdin supplied through a pipe/FIFO but initially provide no input; observe it beyond normal seed time, then send the exact confirmation word; repeat with EOF  
-Expected result: Without a TTY the prompt is emitted and the process waits for input; exact confirmation proceeds to the driver exactly as terminal confirmation does; EOF declines with exit 0 and invokes neither driver nor close; no `--yes` or equivalent bypass is introduced  
-Evidence to capture: Timestamped transcript, blocked/running process observation, invocation trace after input, EOF exit code, and CLI help output showing no bypass flag  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-003
+Priority: P1
+Behavior classification: MODIFY / BOUNDARY
+Related behavior: BEH-B — conditional state prefix and strict grammar
+Related invariant: INV-1
+Preconditions: Disposable checkout with no origin file and no `STAGEGATE_ORIGIN_*` variables
+Exact action: Run a state transition, inspect `.workflow/state`, then separately attempt to resume from `abc:IMPLEMENT`
+Expected result: With no resolvable issue, the driver writes a bare stage token; the nonnumeric prefix is rejected as an unknown workflow state with exit 1 and no stage execution
+Evidence to capture: Environment, state before and after, stdout/stderr, and exit codes
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-004  
-Priority: P0  
-Behavior classification: ADD / SECURITY-SENSITIVE  
-Related behavior: B-04, B-10; AC-3 — satisfactory current audit closes the originating issue with an audit comment  
-Related invariant: I-05, I-06, I-08, I-11 — controlled GitHub mutation, standalone exit compatibility, fail-closed verdict binding, and correct origin  
-Preconditions: Dedicated disposable open GitHub issue; authenticated `gh` with permission to close it; fresh scratch checkout; workflow configured to reach `COMPLETE` with final verdict `READY`; record issue state and comments first  
-Exact action: Run `from-issue.sh <test-issue> --change`, confirm, complete every internal gate, and let the workflow finish; inspect `.workflow/origin`, `.workflow/audit-verdict`, and `FINAL_AUDIT.md`; run `gh issue view <test-issue> --json state,comments`  
-Expected result: The verdict artifact contains the current run ID, class `READY`, and the SHA-256 of the exact current `FINAL_AUDIT.md`; origin identifies the same repository and issue; the issue becomes `CLOSED` exactly once; a close comment identifies the verdict and points to `FINAL_AUDIT.md` and, if retained, `.workflow/change.diff`; overall exit is 0  
-Evidence to capture: Complete transcript, exit code, the three artifacts and independently calculated hash, GitHub state JSON, comment body/author/time, and GitHub audit/event history  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-004
+Priority: P0
+Behavior classification: MODIFY / SECURITY
+Related behavior: BEH-B — state-prefix/origin corruption detection
+Related invariant: INV-1, INV-3
+Preconditions: `.workflow/state` contains `99:IMPLEMENT`; `.workflow/origin` identifies issue 42 with valid `gh` provenance
+Exact action: Invoke `from-issue.sh --change` for issue 42; restore the fixture and invoke `change-workflow.sh` with explicit issue-42 binding
+Expected result: Both entry points refuse with exit 1 and the distinct prefix/origin-corruption message; state remains exactly `99:IMPLEMENT`; no stage runs, issue close, or close marker occurs
+Evidence to capture: Both commands and exit codes, exact messages, before/after state hashes, stage-call log, GitHub-call log, and marker absence
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-005  
-Priority: P0  
-Behavior classification: ADD / BOUNDARY  
-Related behavior: B-04 — `READY WITH NON-BLOCKING ISSUES` is also satisfactory  
-Related invariant: I-08 — only the two approved satisfactory classes permit closing  
-Preconditions: Same controlled setup as MC-004, using a different disposable issue and a final verdict of exactly `READY WITH NON-BLOCKING ISSUES`  
-Exact action: Complete the confirmed workflow and inspect the verdict artifact, audit hash, origin, issue state, and comment  
-Expected result: The stored class is `READY_WITH_NON_BLOCKING_ISSUES`; all run-ID, origin, and hash checks agree; the issue closes with a comment and the invocation exits 0  
-Evidence to capture: Transcript, exit code, artifacts, independent hash, issue state, and comment  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-005
+Priority: P0
+Behavior classification: PRESERVE
+Related behavior: BEH-C — foreign or unowned in-flight state is refused, not automatically cleared
+Related invariant: INV-1, INV-5
+Preconditions: Nonempty, non-`COMPLETE` state owned by another issue; second fixture with in-flight state and missing origin
+Exact action: Invoke `from-issue.sh --change` for a different issue against each fixture
+Expected result: Each invocation exits 1, leaves state and existing artifacts untouched, does not seed or run the workflow, and prints the exact manual state-clear command
+Evidence to capture: Commands, exit codes, exact refusal and guidance text, before/after hashes, and absence of seed/stage calls
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-006  
-Priority: P0  
-Behavior classification: ADD / ERROR  
-Related behavior: B-05, B-06; AC-4 — unsatisfactory, unknown, stale, or incomplete results never close an issue  
-Related invariant: I-08 — closure fails closed  
-Preconditions: Hermetic close-flow environment with `gh` write calls recorded but disabled; distinct fixtures for `NOT READY`, `UNKNOWN`, missing verdict, stale run ID, mismatched audit hash, stale `COMPLETE` state, and a driver exit through a declined internal gate  
-Exact action: Execute the close decision once for each fixture without changing other preconditions  
-Expected result: Every case leaves the issue open and makes no close/comment call; each prints the specific reason; `NOT_READY` and `UNKNOWN` are distinguished; stale `COMPLETE` and internal-gate decline cannot reuse a prior verdict  
-Evidence to capture: Per-case transcript, exit code, fixture contents, invocation log proving no GitHub write, and issue state  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-006
+Priority: P1
+Behavior classification: MODIFY / REGRESSION
+Related behavior: BEH-B — prefixed `COMPLETE` is recognized by both completion gates
+Related invariant: INV-1
+Preconditions: Seeder fixture with `42:COMPLETE`; driver fixture with `42:COMPLETE`, valid origin, and explicit matching binding
+Exact action: Run the seeder for issue 42 and confirm reseeding is permitted; separately run the driver preflight against the completed state
+Expected result: The seeder does not misclassify `42:COMPLETE` as in-flight; driver preflight does not reject it as a foreign active run
+Evidence to capture: Commands, exit codes, seed-write evidence, and exact output
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-007  
-Priority: P0  
-Behavior classification: ADD / FAILURE PROPAGATION  
-Related behavior: B-06 — driver failure or interruption prevents closure and preserves the real status  
-Related invariant: I-08 — only a successfully completed current run can close  
-Preconditions: Hermetic driver substitutes that exit 1, 7, and 130 after confirmation; open test issue state recorded  
-Exact action: Run the confirmed `from-issue.sh --change` flow against each substitute and record the outer process status and GitHub calls  
-Expected result: No close or comment is attempted; the output plainly reports driver failure; the outer invocation returns the exact driver status 1, 7, or 130 respectively, without inversion or collapse  
-Evidence to capture: Full transcript, inner and outer exit codes, GitHub invocation log, and issue state  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-007
+Priority: P0
+Behavior classification: MODIFY / SECURITY
+Related behavior: BEH-D — direct driver closes an eligible issue at `COMPLETE`
+Related invariant: INV-3
+Preconditions: Disposable open GitHub issue fetched through authenticated `gh`; explicit matching `STAGEGATE_ORIGIN_REPO`, `STAGEGATE_ORIGIN_ISSUE`, and concrete `STAGEGATE_RUN_ID`; READY audit with matching verdict record and audit hash; closing enabled
+Exact action: Run `change-workflow.sh` directly through `COMPLETE`, without `from-issue.sh`
+Expected result: Exactly one close targets the bound issue before process exit; exit code is 0; `.workflow/issue-closed` records the matching run and issue; the workflow reports completion
+Evidence to capture: Environment, command and exit code, issue event/history, GitHub-call log, verdict/origin/audit hashes, marker contents, and terminal output
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-008  
-Priority: P0  
-Behavior classification: ADD / RECOVERY  
-Related behavior: B-07; AC-5 — unavailable GitHub write capability is an explicit non-fatal close skip  
-Related invariant: I-09 — missing or unauthenticated `gh` never silently no-ops or crashes a completed workflow  
-Preconditions: Completed satisfactory workflow fixture; one run fetched through curl fallback; one run loses `gh` before close; one run has installed but unauthenticated `gh`; open disposable issues  
-Exact action: Exercise the post-workflow close step in each environment and query issue state through an independent authenticated observer  
-Expected result: No close/comment attempt occurs; each issue stays open; an explicit skip reason is printed; the successful workflow completion remains successful with exit 0  
-Evidence to capture: Transcripts, exit codes, PATH/auth evidence, command invocation logs, and independently queried issue states  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-008
+Priority: P0
+Behavior classification: MODIFY / SECURITY
+Related behavior: BEH-D — READY_WITH_NON_BLOCKING_ISSUES is close-eligible under the same gate
+Related invariant: INV-3
+Preconditions: Same as MC-007 except the audit verdict is READY_WITH_NON_BLOCKING_ISSUES
+Exact action: Run `change-workflow.sh` directly through `COMPLETE`
+Expected result: Exactly one close targets the bound issue; the matching close marker is written; exit code is 0
+Evidence to capture: Verdict record, audit hash, GitHub-call log, marker contents, issue state, and exit code
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-009  
-Priority: P0  
-Behavior classification: ADD / ERROR / RECOVERY  
-Related behavior: GitHub close failure after successful workflow completion  
-Related invariant: I-05, I-08 — the sole irreversible write reports failure accurately  
-Preconditions: Satisfactory, correctly bound current-run artifacts; authenticated `gh` stub or controlled failure returning a known non-zero status for `issue close`  
-Exact action: Allow all close gates to pass, then force `gh issue close --comment` to fail  
-Expected result: The invocation exits non-zero, prints the underlying close error, explicitly states that the workflow completed and only closure failed, and does not claim the change workflow itself was incomplete; the issue remains open  
-Evidence to capture: Transcript, exit code, exact attempted `gh` arguments with credentials redacted, workflow state, and issue state  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-009
+Priority: P0
+Behavior classification: PRESERVE / SECURITY
+Related behavior: BEH-D — ineligible completion must not close
+Related invariant: INV-3
+Preconditions: Independent fixtures varying one condition at a time: non-READY verdict; missing origin; unauthenticated `gh`; mismatched run ID; mismatched origin; stale audit hash; `WORKFLOW_CLOSE_ISSUE=0`
+Exact action: Run the direct driver to `COMPLETE` for each fixture
+Expected result: Every run exits 0 and completes locally without a close attempt or marker; each applicable skip reason identifies the failed gate; no issue other than the fixture target is modified
+Evidence to capture: Condition matrix, commands, exit codes, stdout/stderr, GitHub-call logs, issue states, and marker absence
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-010  
-Priority: P0  
-Behavior classification: ADD / SECURITY-SENSITIVE  
-Related behavior: Wrong-issue and foreign-state protection  
-Related invariant: I-11 — resumed or auto-invoked state must be provably owned by the current repository and issue  
-Preconditions: Scratch checkout with non-empty, non-`COMPLETE` state belonging to issue A; preserve hashes of `CHANGE_REQUEST.md`, state, origin, audit, approvals, and logs; issue B is open  
-Exact action: Invoke `from-issue.sh <issue-B> --change`; separately invoke `change-workflow.sh` with issue-B origin environment against issue-A state; repeat with `.workflow/origin` absent  
-Expected result: Both entry points refuse with non-zero status before seeding, prompting, dispatch, audit, or GitHub access; the message names the conflicting or unprovable identity; all preserved files remain byte-identical; any acquired lock is released  
-Evidence to capture: Before/after hashes and directory listings, transcripts, exit codes, process/invocation trace, lock state, and both GitHub issue states  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-010
+Priority: P0
+Behavior classification: MODIFY / SECURITY
+Related behavior: BEH-D — stale on-disk origin cannot authorize a fresh direct run
+Related invariant: INV-1, INV-3
+Preconditions: Empty state at process start; leftover authenticated-looking origin for issue A; READY result; no explicit `STAGEGATE_ORIGIN_*`
+Exact action: Start a fresh direct `change-workflow.sh` run and allow it to reach `COMPLETE`
+Expected result: The workflow exits 0 but closes neither issue A nor any other issue; no marker is written; a distinct origin-freshness skip reason is printed
+Evidence to capture: Sanitized environment, initial state/origin, command and exit code, exact reason, GitHub-call log, issue states, and marker absence
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-011  
-Priority: P0  
-Behavior classification: ADD / FAILURE AND RECOVERY  
-Related behavior: Same-origin pause and resume without destroying the reviewed seed  
-Related invariant: I-02, I-07, I-11 — approval hashes remain authoritative, the edit window persists, and provenance survives restart  
-Preconditions: Issue A seeded and confirmed; driver paused at non-`COMPLETE` state after an internal gate decline; origin names issue A; hand-edited `CHANGE_REQUEST.md` hash recorded  
-Exact action: Rerun `from-issue.sh <issue-A> --change`; observe the pre-confirmation path, confirm, and resume to a satisfactory completion  
-Expected result: The fetch/seed step does not overwrite `CHANGE_REQUEST.md`; a “resuming existing seed” notice and confirmation appear; the driver resumes from saved state; approval-hash enforcement remains active; eventual closure targets issue A exactly once  
-Evidence to capture: Request hashes before/after resume, transcript, state transitions, origin, approval verification output, issue events, and comment count  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-011
+Priority: P0
+Behavior classification: MODIFY / BOUNDARY
+Related behavior: BEH-D — explicit invocation binding authorizes a fresh direct run
+Related invariant: INV-1, INV-3
+Preconditions: Empty state at process start; matching `STAGEGATE_ORIGIN_REPO` and `STAGEGATE_ORIGIN_ISSUE` explicitly set; concrete matching run ID; authenticated `gh` provenance; eligible verdict
+Exact action: Run `change-workflow.sh` directly through `COMPLETE`
+Expected result: Explicit fresh binding satisfies the freshness guard and exactly one close occurs for the bound issue
+Evidence to capture: Initial state, explicit environment, origin/verdict records, GitHub-call log, marker, issue state, and exit code
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-012  
-Priority: P0  
-Behavior classification: ADD / CONCURRENCY  
-Related behavior: Serialize access to checkout-local workflow state  
-Related invariant: I-10 — only one driver may own a checkout’s `.workflow/` at a time  
-Preconditions: First driver running in a safe scratch checkout; its PID and state recorded; second invocation available  
-Exact action: While the first run is active, start a second `change-workflow.sh` from the same checkout  
-Expected result: The second invocation refuses promptly with non-zero status and a lock-held message naming the live PID; it changes no workflow or audit data; the first invocation continues normally; the lock remains until the first exits and is then removed  
-Evidence to capture: Concurrent transcripts, PIDs, exit codes, lock directory and PID contents over time, before/after state hashes, and first-run completion evidence  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-012
+Priority: P0
+Behavior classification: ADD / SECURITY / MIGRATION
+Related behavior: BEH-D — close authority requires authenticated-fetch provenance
+Related invariant: INV-3
+Preconditions: Three independent origin fixtures: third field `gh`; third field `curl`; legacy two-field origin with no provenance; otherwise identical eligible READY completion and healthy authenticated `gh` at close time
+Exact action: Run the direct driver to `COMPLETE` for each fixture
+Expected result: The `gh` fixture may close when all other gates pass; `curl` and legacy fixtures exit 0 without a close or marker and print the provenance skip reason
+Evidence to capture: Raw origin files, commands, exit codes, exact reasons, GitHub-call logs, marker state, and issue states
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-013  
-Priority: P1  
-Behavior classification: ADD / RESTART RECOVERY  
-Related behavior: Recover automatically from a lock whose owning process is dead  
-Related invariant: I-10 — stale synchronization data must not permanently block progress  
-Preconditions: Scratch checkout with `.workflow/lock/pid` naming a verified dead PID; otherwise valid resumable state  
-Exact action: Start `change-workflow.sh` and observe lock handling through process exit  
-Expected result: The stale lock is identified and cleared, the driver proceeds, the replacement lock records the current PID, and the lock is removed on normal exit  
-Evidence to capture: Dead-PID proof, lock contents before/during/after, transcript, state hashes, and exit code  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-013
+Priority: P0
+Behavior classification: PRESERVE / SECURITY
+Related behavior: BEH-D — curl fallback never authorizes a later GitHub write
+Related invariant: INV-3
+Preconditions: Disposable issue; force `from-issue.sh` to fetch through curl while permitting later `gh auth status` and `gh issue close` calls to succeed
+Exact action: Seed and run the real workflow path to an eligible READY completion
+Expected result: Origin records `curl`; neither the driver nor the wrapper closes the issue; no marker is created; local workflow completion remains successful
+Evidence to capture: Fetch-path log, origin contents, driver/wrapper output and exit codes, GitHub-call log, marker absence, and final issue state
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-014  
-Priority: P0  
-Behavior classification: ADD / STALE-DATA DEFENSE  
-Related behavior: Current audit output must replace, not inherit, prior audit output  
-Related invariant: I-08 — verdict must be fresh and hash-bound to the exact classified bytes  
-Preconditions: Precreate a stale `FINAL_AUDIT.md` ending in `READY`; configure the reviewer call to return 0 without recreating the file; record issue state and verdict artifact  
-Exact action: Run the `FINAL_AUDIT` stage through its normal workflow entry point  
-Expected result: The stale audit is removed before reviewer execution; absence of newly produced output causes a hard failure before `COMPLETE`; no new verdict artifact authorizing closure is written and no close is attempted  
-Evidence to capture: Before/after file listings and hashes, stage transcript, state, exit code, verdict artifact, GitHub invocation trace, and issue state  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-014
+Priority: P0
+Behavior classification: ADD / FAILURE AND RECOVERY / RESTART
+Related behavior: BEH-D — transient close failure is retryable from `COMPLETE`
+Related invariant: INV-3
+Preconditions: Eligible concrete run ID; first close configured to fail; marker absent; verdict, origin, and audit remain unchanged; second invocation uses the same explicit run ID with healthy `gh`
+Exact action: Complete the first run, then rerun from `COMPLETE`
+Expected result: First invocation warns, writes no marker, leaves state `COMPLETE`, releases the lock, and exits 0; second invocation performs one successful close, writes the matching marker, and exits 0; total successful closes equal one
+Evidence to capture: Both commands and exit codes, state after each run, warnings, GitHub-call log, marker contents, issue history, and lock state
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-015  
-Priority: P0  
-Behavior classification: ADD / BOUNDARY  
-Related behavior: Exact-last-line audit verdict classification  
-Related invariant: I-08 — ambiguous audit prose cannot authorize closure  
-Preconditions: Isolated classifier runner and fixtures covering all specified formats  
-Exact action: Classify audits ending respectively in `READY`, `READY WITH NON-BLOCKING ISSUES`, `NOT READY`, `## READY`, emphasized verdict text, trailing blank lines, CRLF, `Rerun until READY`, concatenated verdict phrases, an empty file, and arbitrary trailing signature/prose  
-Expected result: Exact approved phrases classify to their normalized classes after permitted heading/emphasis/whitespace cleanup; CRLF and trailing blank lines do not alter the result; all non-exact, concatenated, empty, or trailing-prose cases classify `UNKNOWN`; only the final non-blank line controls classification  
-Evidence to capture: Fixture bytes, classifier output and exit code for every fixture, plus automated test transcript  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-015
+Priority: P0
+Behavior classification: ADD / RESTART / SECURITY
+Related behavior: BEH-D — ambiguous sentinel run IDs never trigger retry
+Related invariant: INV-3
+Preconditions: State is `COMPLETE`; marker absent; verdict record run ID is `-`; `STAGEGATE_RUN_ID` is unset; all other close inputs appear eligible
+Exact action: Rerun `change-workflow.sh`
+Expected result: No retry or close attempt occurs, no marker is written, issue remains open, and the driver exits 0
+Evidence to capture: Sanitized environment, verdict record, command and exit code, GitHub-call log, marker absence, and issue state
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-016  
-Priority: P1  
-Behavior classification: MODIFY / OBSERVABILITY  
-Related behavior: B-10 and all close/refusal paths emit usable operational evidence  
-Related invariant: I-06, I-09, I-10, I-11 — machine-readable verdict plus explicit safe refusals  
-Preconditions: Representative successful, declined, close-skipped, lock-refused, origin-refused, and close-failed scenarios available  
-Exact action: Execute each scenario and inspect stdout/stderr plus `.workflow/audit-verdict` and `.workflow/origin`  
-Expected result: Output includes `Audit verdict: <class>` and an unambiguous close, skip, or failure line; lock refusal names its PID; origin refusal names the conflicting issue; the verdict artifact is exactly three tab-separated fields `<run-id> <class> <sha256>`; origin is exactly `<repo> <issue>`; no credentials or tokens are emitted; existing logs and `cost.tsv` formats are unchanged  
-Evidence to capture: Redacted transcripts, raw artifact bytes, field counts, log/cost hashes or format comparison, and secret scan results  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-016
+Priority: P0
+Behavior classification: ADD / IDEMPOTENCY
+Related behavior: BEH-D — driver and wrapper do not double-close
+Related invariant: INV-3
+Preconditions: `from-issue.sh`-launched eligible run in which the driver successfully closes the issue and writes a matching marker
+Exact action: Allow control to return to `from-issue.sh` after driver completion
+Expected result: The wrapper recognizes the marker and does not issue a second close; exactly one close exists in the GitHub-call log
+Evidence to capture: Driver and wrapper output, marker contents, GitHub-call log, issue history, and final exit code
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-017  
-Priority: P0  
-Behavior classification: PRESERVE  
-Related behavior: B-08; AC-6 — new-project issue flow remains unchanged  
-Related invariant: I-04 — scripts remain CWD-independent; change-only dispatch remains isolated  
-Preconditions: Identical scratch checkouts at pre-change baseline and candidate revision; representative issue that selects `--new` explicitly and by auto-detection  
-Exact action: Run `from-issue.sh <issue> --new` and the auto-detected new-project path in both revisions; compare stdout, stderr, exit code, and resulting `REQUIREMENTS.md` byte-for-byte  
-Expected result: Candidate behavior is byte-identical to baseline: it writes the same requirements section, prints the same hint, exits without confirmation, does not invoke `stagegate.sh`, and performs no GitHub write  
-Evidence to capture: Commands, transcripts, exit codes, file hashes/diffs, invocation trace, and issue state/comment count  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-017
+Priority: P0
+Behavior classification: PRESERVE / SECURITY
+Related behavior: BEH-D — stale marker cannot suppress a legitimate gated close
+Related invariant: INV-3
+Preconditions: Eligible wrapper close with a marker naming a different run or issue
+Exact action: Complete the workflow through `from-issue.sh`
+Expected result: The stale marker is ignored; the normal gated close executes exactly once for the current issue; resulting durable evidence identifies the current run and issue
+Evidence to capture: Stale marker before execution, GitHub-call log, current marker after execution, issue history, and exit code
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-018  
-Priority: P1  
-Behavior classification: PRESERVE / REGRESSION  
-Related behavior: B-09, B-10; AC-7 — established CLI contracts remain unchanged  
-Related invariant: I-04, I-06 — CWD independence and standalone driver compatibility  
-Preconditions: Candidate revision and frozen baseline expectations from `BASELINE_REPORT.md`; no live workflow execution required  
-Exact action: Run `from-issue.sh` with no arguments, `--help`, `abc`, and an unknown flag; run `change-workflow.sh --help`, `--version`, and an unknown argument; repeat each via absolute path from `/tmp`  
-Expected result: Existing usage text routing and exit codes match baseline: `from-issue.sh` no-arg/help exits 0 to stdout and invalid input exits 1 with usage to stdout; driver help exits 0 to stdout, version prints `0.1.0` and exits 0, unknown argument sends usage to stderr and exits 1; all work from another CWD  
-Evidence to capture: Command matrix with stdout, stderr, and exit codes; baseline comparison; `/tmp` transcripts  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-018
+Priority: P1
+Behavior classification: ADD / FAILURE AND RECOVERY / PERFORMANCE
+Related behavior: BEH-D — close call uses a best-effort bounded deadline
+Related invariant: INV-2, INV-3
+Preconditions: Environment with `timeout` or `gtimeout`; eligible completion; `gh issue close` stub blocks longer than 30 seconds
+Exact action: Run the driver to `COMPLETE` and measure elapsed time
+Expected result: Close is terminated at approximately the specified 30-second deadline; warning is printed; no marker is written; state remains `COMPLETE`; driver exits 0 and releases `.workflow/lock/`; later retry remains possible
+Evidence to capture: Timeout utility selected, timestamps, elapsed time, stdout/stderr, exit code, state, marker absence, and lock absence
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-019  
-Priority: P0  
-Behavior classification: PRESERVE / REGRESSION  
-Related behavior: Existing workflow stages, gates, approvals, reviewer ownership, state order, and accounting remain unchanged  
-Related invariant: I-01, I-02, I-03 — exact-word internal gates, SHA-256 approval pinning, and reviewer-owned artifact control  
-Preconditions: Scratch standalone workflow run with no `STAGEGATE_ORIGIN_*`; ability to decline a gate and alter an approved artifact in separate runs  
-Exact action: Run the standalone driver through representative stages; decline one internal gate; in a separate run approve an artifact, modify it, and resume; complete a normal single standalone run while observing state order and artifacts  
-Expected result: Decline still halts further work; modified approved content still triggers hash verification failure; reviewer-owned artifacts arise only through reviewer stages; state nodes remain `ANALYZE` through `COMPLETE` without additions or reordering; standalone execution does not require or write origin data, still exits 0 at `COMPLETE`, and differs only by the documented verdict line and transient lock; logs and cost accounting continue normally  
-Evidence to capture: Transcripts, state history, approval/file hashes, artifact provenance, exit codes, origin/lock observations, logs, and cost ledger  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-019
+Priority: P1
+Behavior classification: ADD / PORTABILITY
+Related behavior: BEH-D — disclosed timeout fallback when no timeout utility exists
+Related invariant: INV-2
+Preconditions: Disposable checkout; otherwise eligible completion; controlled `gh` stub that writes an invocation marker and then waits for input; isolated `PATH` containing required shell utilities and the stub but neither `timeout` nor `gtimeout`; external harness deadline of 5 seconds
+Exact action: Confirm `command -v timeout` and `command -v gtimeout` both fail inside the isolated environment, start `change-workflow.sh` in a new process group, wait for the `gh` invocation marker, then after 5 seconds terminate the process group and inspect output and artifacts; the exercised branch is `scripts/lib/issue-close.sh:196-203`
+Expected result: `gh issue close` is invoked directly without a timeout wrapper; no 30-second-deadline message is printed; before harness termination no close marker is written and `.workflow/lock/` remains held because the unbounded close has not returned; harness termination triggers driver cleanup and removes `.workflow/lock/`
+Evidence to capture: Isolated `PATH`, utility lookup output, platform/version, harness command and timestamps, process tree, workflow output, invocation marker, close-marker absence, and lock state before and after termination
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-020  
-Priority: P1  
-Behavior classification: ADD / FRESH-START AND RESTART  
-Related behavior: Origin claim lifecycle across absent, empty, and `COMPLETE` state  
-Related invariant: I-11 — only active in-progress state prevents a new issue from claiming the checkout  
-Preconditions: Three scratch scenarios: absent state/origin, empty state, and `COMPLETE` state previously associated with issue A; dedicated issue B  
-Exact action: Start and confirm `from-issue.sh <issue-B> --change` in each scenario; stop safely after origin initialization  
-Expected result: Each scenario is accepted as fresh/restartable; issue B becomes the current origin as `ANALYZE` starts; prior completed origin does not cause refusal; no prior in-progress state or audit is incorrectly reused to close issue B  
-Evidence to capture: Before/after state and origin bytes, transcript, run IDs, audit artifacts, exit codes, and GitHub invocation trace  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-020
+Priority: P0
+Behavior classification: PRESERVE / FAILURE
+Related behavior: BEH-E — lock cleanup remains unchanged
+Related invariant: INV-2
+Preconditions: Independent runs covering successful completion, ordinary close failure, timeout, stage error, and interrupt signal
+Exact action: Execute each exit path and inspect `.workflow/lock/` immediately after the process exits
+Expected result: The entire `.workflow/lock/` directory and all contents are absent after every driver-controlled exit
+Evidence to capture: Commands, exit conditions, exit codes, and post-exit filesystem listing for every path
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-021  
-Priority: P1  
-Behavior classification: ADD / PERSISTENCE COMPATIBILITY  
-Related behavior: New workflow metadata coexists with existing state without migration  
-Related invariant: I-06, I-10, I-11 — additive metadata must not reinterpret existing formats  
-Preconditions: Scratch copies of representative legacy states with no `.workflow/origin`, lock, or audit-verdict; include empty/`COMPLETE` and non-empty/non-`COMPLETE` cases  
-Exact action: Invoke the standalone driver on each legacy state; invoke the issue-seeded flow against matching test issues  
-Expected result: Standalone execution remains compatible because origin preflight is skipped without origin environment; empty/`COMPLETE` issue-seeded runs create new metadata safely; an issue-seeded run against ownerless in-progress legacy state refuses rather than guessing ownership; existing `state`, approvals, logs, cost ledger, and `CHANGE_REQUEST.md` formats are not migrated or rewritten merely to support metadata  
-Evidence to capture: Before/after byte comparisons, transcripts, exit codes, and new metadata listings  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-021
+Priority: P0
+Behavior classification: PRESERVE / CONCURRENCY
+Related behavior: BEH-E — existing single-change-workflow locking behavior
+Related invariant: INV-2
+Preconditions: One fixture with a live lock-holder PID; another with a stale PID
+Exact action: Start a second driver against the live lock, then separately start a driver against the stale lock
+Expected result: Live lock prevents concurrent ownership; stale lock is recovered according to existing behavior; neither path weakens lock cleanup
+Evidence to capture: Process/PID evidence, commands, output, exit codes, and lock contents before and after
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-022  
-Priority: P1  
-Behavior classification: REMOVE / DOCUMENTATION  
-Related behavior: Remove the old successful `--change` print-and-exit handoff and document the new gate/run/close lifecycle  
-Related invariant: I-07, I-09, I-10, I-11 — documented operational behavior matches enforced behavior  
-Preconditions: Candidate `README.md` and `scripts/README.md`; execution results from MC-001 through MC-013  
-Exact action: Follow the documented “Start from a GitHub issue” procedure literally for confirmation, decline, same-origin resume, curl/auth skip, lock refusal, and origin refusal  
-Expected result: Documentation no longer instructs successful change runs to stop after printing a manual command; it accurately describes the blocking prompt, auto-run, conditional commented close, close-skip behavior, origin ownership, lock refusal, no non-interactive bypass, and unchanged `--new` flow; every documented command and expected message agrees with observed behavior  
-Evidence to capture: Documentation excerpts, command transcripts, discrepancies list, and reviewer sign-off  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-022
+Priority: P1
+Behavior classification: PRESERVE / REGRESSION
+Related behavior: Existing approval integrity and audit-verdict classification
+Related invariant: INV-4, INV-3
+Preconditions: Approved artifact fixture; separate audit-verdict classification fixtures
+Exact action: Mutate an approved artifact after approval and attempt to continue; run the unchanged audit-verdict suite
+Expected result: Mutated artifact is rejected pending reapproval; all established verdict classes retain their prior classifications
+Evidence to capture: Approval and artifact hashes, rejection output and exit code, and complete audit-verdict suite transcript
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-023  
-Priority: P0  
-Behavior classification: REGRESSION / AUTOMATED VERIFICATION  
-Related behavior: AC-3 through AC-7 and all specified negative close branches  
-Related invariant: I-04, I-08, I-09, I-10, I-11  
-Preconditions: Candidate revision with documented shell dependencies; no real GitHub issue mutation permitted during this check  
-Exact action: Run `for f in scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh; do bash -n "$f"; done`, then run the specified audit-verdict and hermetic close-flow test scripts, then replay the baseline argument commands  
-Expected result: Every syntax check and automated test exits 0; close-flow coverage includes both satisfactory verdicts, `NOT_READY`, `UNKNOWN`, missing/mismatched run ID, origin and hash, driver statuses 1/7/130, curl fallback, unauthenticated `gh`, close failure, prompt decline, lock contention, and foreign origin; no test performs a real GitHub write  
-Evidence to capture: Exact commands, complete test output, exit codes, test environment/stub evidence, and baseline command comparison  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-024
+Priority: P0
+Behavior classification: REGRESSION / SCOPE
+Related behavior: Frozen change scope and representative PRESERVE behaviors
+Related invariant: INV-1, INV-2, INV-4, INV-5
+Preconditions: Completed implementation available for review
+Exact action: Compare the implementation against the approved baseline and confirm that every must-not-change file and setting is unchanged
+Expected result: No changes exist in `scripts/stagegate.sh`, `scripts/workflow.sh`, `scripts/lib/audit-verdict.sh`, `scripts/codex-review-plan.sh`, `scripts/codex-create-checklist.sh`, `prompts/**`, `CHANGE_REQUEST.md`, `QUICK_START.md`, model/effort/turn/tool defaults, agent/reviewer command defaults, cost ledger, lock implementation, `verify_approval`, `scripts/tests/audit-verdict-test.sh`, or reviewer-owned artifacts
+Evidence to capture: Path-limited diff, configuration-default comparison, and reviewer sign-off
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-024  
-Priority: P1  
-Behavior classification: ROLLBACK  
-Related behavior: Revert to seed-and-hint behavior without changing existing workflow state formats  
-Related invariant: I-05, I-06 — rollback removes automatic GitHub mutation while preserving pre-change state compatibility  
-Preconditions: Disposable branch/checkout containing candidate revision; completed test run with new metadata; disposable issue closed by the feature; approved rollback procedure  
-Exact action: Revert the change commits in the disposable checkout, leave new `.workflow/audit-verdict` and `.workflow/origin` present for the first smoke test, then remove only the documented new metadata and rerun pre-change CLI smoke checks  
-Expected result: Reverted `from-issue.sh --change` returns to writing the request and printing the manual driver hint without auto-run or close; reverted driver ignores leftover additive metadata; existing state, approval hashes, logs, and cost data require no migration/reset; rollback does not automatically reopen an already closed issue and documentation clearly requires manual reopening when desired  
-Evidence to capture: Revert commit/diff, before/after metadata listing, smoke-test transcript and exit codes, retained state hashes, and issue state  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-025
+Priority: P1
+Behavior classification: MODIFY / OBSERVABILITY
+Related behavior: BEH-C and BEH-D — distinct actionable outcome messages and durable close evidence
+Related invariant: INV-3, INV-5
+Preconditions: Fixtures triggering freshness skip, provenance skip, prefix/origin refusal, close timeout/failure, successful close, and foreign-state refusal
+Exact action: Execute each fixture and compare its output and durable artifacts
+Expected result: Each new condition has a distinct message; no pre-existing asserted message is reworded; successful close creates a run/issue-specific marker; skipped or failed closes do not
+Evidence to capture: Message matrix, marker contents or absence, and comparison with approved pre-existing strings
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-025  
-Priority: P1  
-Behavior classification: ADD / DEVIATION / REGRESSION  
-Related behavior: Test-only source hook introduced outside the public CLI contract  
-Related invariant: I-04, I-05, I-07 — testability must not create an accidental production bypass  
-Preconditions: Scratch checkout; harmless fetch and driver stubs; environment initially free of `STAGEGATE_FROM_ISSUE_SOURCE_ONLY`; implementation at `scripts/from-issue.sh:213-219`  
-Exact action: Execute `from-issue.sh <test-issue> --change` normally with the variable unset and with `STAGEGATE_FROM_ISSUE_SOURCE_ONLY=0`; then execute it with `STAGEGATE_FROM_ISSUE_SOURCE_ONLY=1`; separately source it with the variable set and inspect the functions made available  
-Expected result: Unset and `0` run the normal CLI; `1` exits before argument parsing, fetch, seeding, prompting, driver execution, and GitHub writes; sourcing with `1` defines the intended helper functions without executing the CLI; the hook is absent from help and accepts no command-line equivalent  
-Evidence to capture: Environment, transcripts, exit codes, fetch/driver/GitHub invocation logs, function listing, help output, and filesystem hashes  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-026
+Priority: P1
+Behavior classification: MODIFY / DOCUMENTATION / MIGRATION
+Related behavior: BEH-B and BEH-D interface changes
+Related invariant: INV-1, INV-3
+Preconditions: Updated user documentation available
+Exact action: Follow documentation to create and resume both `<issue>:<STAGE>` and legacy bare state; inspect documentation for origin provenance, driver-side closing, marker, kill switch, retry, skip guards, and manual-clear guidance
+Expected result: Documented commands reproduce supported behavior; README files describe the new state and origin grammars and close flow; `QUICK_START.md` remains correct without modification because bare stage tokens remain valid
+Evidence to capture: Documentation excerpts, commands followed, resulting state/origin files, and observed outcomes
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-026  
-Priority: P0  
-Behavior classification: ADD / CONCURRENCY LIMITATION  
-Related behavior: Two independent checkouts can operate on the same originating issue concurrently  
-Related invariant: I-05, I-08, I-11 — each checkout must remain bound to its own run, and duplicate irreversible writes must be understood  
-Preconditions: Two scratch clones of the same repository; the same dedicated disposable open issue; authenticated `gh`; both workflows controllable at their internal gates; checkout-local lock behavior at `scripts/change-workflow.sh:142-183`; concern recorded at `IMPLEMENTATION_NOTES.md:64-66`  
-Exact action: Start `from-issue.sh <test-issue> --change` in both clones, confirm both, hold each after origin initialization, then advance both to satisfactory completion while recording GitHub calls and issue events  
-Expected result: Each clone acquires only its own checkout-local lock and preserves its own origin/run/hash binding; neither run reads or overwrites the other clone’s artifacts; record whether both attempt `gh issue close`, how the second close is reported after the first closes the issue, and whether any duplicate comment or misleading success message occurs  
-Evidence to capture: Both transcripts, PIDs, lock/origin/verdict bytes, run IDs, independent audit hashes, exact GitHub calls, issue timeline, comment count, and both exit codes  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-027
+Priority: P1
+Behavior classification: ROLLBACK
+Related behavior: BEH-B and BEH-D rollback expectations
+Related invariant: INV-1, INV-3
+Preconditions: Reversible test deployment containing a prefixed state; disposable issue; ability to disable closing and restore the prior release
+Exact action: Set `WORKFLOW_CLOSE_ISSUE=0` and verify immediate containment; restore the prior release; replace any remaining prefixed state with its documented bare equivalent; resume through the legacy wrapper path
+Expected result: Kill switch prevents driver-side closing; prior release resumes from the rewritten bare state; legacy `from-issue.sh` close behavior remains available; no automatic reversal of an already-closed issue is attempted
+Evidence to capture: Configuration, commands, state before/after rewrite, driver/wrapper logs, issue history, and rollback outcome
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-027  
-Priority: P1  
-Behavior classification: ADD / LOCK RECOVERY LIMITATION  
-Related behavior: A stale lock PID reused by an unrelated live process causes a false lock-held refusal  
-Related invariant: I-10 — lock recovery must fail safely without corrupting workflow state  
-Preconditions: Scratch checkout with valid resumable state; unrelated long-lived process with known PID; `.workflow/lock/pid` containing that live unrelated PID; implementation at `scripts/change-workflow.sh:166-178`; concern recorded at `IMPLEMENTATION_NOTES.md:67-68`  
-Exact action: Start `change-workflow.sh` while the unrelated process remains alive; preserve workflow hashes; terminate that unrelated process and invoke the driver again against the unchanged stale lock  
-Expected result: The first invocation refuses non-zero, names the recorded PID, and changes no workflow/audit data; after the unrelated process exits, the second invocation identifies and clears the stale lock, acquires a replacement lock, and proceeds; no invocation falsely proceeds while the recorded PID is live  
-Evidence to capture: Process identity and liveness evidence, lock contents, both transcripts and exit codes, state/artifact hashes, and replacement-lock lifecycle  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-028
+Priority: P1
+Behavior classification: PRESERVE / PROTOTYPE ISOLATION
+Related behavior: BEH-A remains unresolved and outside this delivery
+Related invariant: Frozen scope
+Preconditions: Completed implementation and completion report available
+Exact action: Inspect configuration behavior and the completion report for model-related changes or claims
+Expected result: Model, effort, turn, tool, `AGENT_CMD`, and `REVIEWER_CMD` defaults remain unchanged; no Kimi wrapper or compatibility claim is introduced; the report explicitly states that CR Motivation-A is not delivered and remains open
+Evidence to capture: Defaults comparison and completion-report excerpt
+Actual result:
+Status: NOT RUN
 
-Check ID: MC-028  
-Priority: P0  
-Behavior classification: ADD / LIVE INTEGRATION GAP  
-Related behavior: B-05; AC-4 — a real unsatisfactory audit leaves the originating issue open  
-Related invariant: I-05, I-08, I-11 — live pipeline closure remains fail-closed  
-Preconditions: Dedicated disposable open GitHub issue; authenticated `gh`; fresh scratch checkout; real agent pipeline configured to reach `COMPLETE` with final verdict exactly `NOT READY`; issue state and comments recorded first; untested area cited at `CHANGE_TEST_REPORT.md:77-80`  
-Exact action: Run `from-issue.sh <test-issue> --change`, confirm, complete every internal gate, and allow the real final-audit and post-workflow close decision to finish; inspect `.workflow/origin`, `.workflow/audit-verdict`, `FINAL_AUDIT.md`, and `gh issue view <test-issue> --json state,comments`  
-Expected result: The verdict artifact contains the current run ID, class `NOT_READY`, and the SHA-256 of the exact current `FINAL_AUDIT.md`; origin identifies the same repository and issue; the issue remains `OPEN`; no close comment or close event is created; output explicitly reports the `NOT_READY` verdict and open disposition; overall workflow exit is 0  
-Evidence to capture: Complete transcript, exit code, artifact bytes, independent audit hash, GitHub state JSON, comment/event history, and exact GitHub invocation trace  
-Actual result:  
-Status: NOT RUN  
+Check ID: MC-029
+Priority: P1
+Behavior classification: REGRESSION / AUTOMATED
+Related behavior: BEH-B, BEH-C, BEH-D, BEH-E and accepted AR-001/002/003/004/008 guards
+Related invariant: INV-1, INV-2, INV-3, INV-5
+Preconditions: Clean shell with ambient `STAGEGATE_ORIGIN_REPO`, `STAGEGATE_ORIGIN_ISSUE`, and `STAGEGATE_RUN_ID` sanitized
+Exact action: Run `bash scripts/tests/close-flow-test.sh` and `bash scripts/tests/audit-verdict-test.sh`
+Expected result: Close-flow reports 181 checks and audit-verdict reports 26 checks, for 207 checks total with no failures; pre-existing asserted output strings remain unchanged as reconciled in `CHANGE_TEST_REPORT.md:87-94`
+Evidence to capture: Sanitized environment, exact commands, complete transcripts, exit codes, and reported counts
+Actual result:
+Status: NOT RUN
 
-Acceptance-criteria traceability: AC-1 → MC-001, MC-003; AC-2 → MC-002; AC-3 → MC-004, MC-005, MC-015, MC-016; AC-4 → MC-006, MC-007, MC-010, MC-014, MC-028; AC-5 → MC-008; AC-6 → MC-017; AC-7 → MC-018, MC-023  
-Preserved-behavior coverage: B-08 → MC-017; B-09 → MC-018; B-10 standalone compatibility → MC-018, MC-019; I-01/I-02/I-03 → MC-019; CWD independence → MC-018; existing state formats → MC-019, MC-021; unchanged out-of-scope `--new` dispatch → MC-017; public CLI isolation from the test-only source hook → MC-025  
-Changed-behavior coverage: B-01/B-02 → MC-001, MC-003; B-03 → MC-002; B-04 → MC-004, MC-005; B-05/B-06 → MC-006, MC-007, MC-028; B-07 → MC-008; B-10 signal → MC-004, MC-015, MC-016; origin, freshness, concurrency, resume, and observability additions → MC-010 through MC-016, MC-020; implementation deviations and limitations → MC-025 through MC-027  
-Invariant coverage: I-01 → MC-019; I-02 → MC-011, MC-019; I-03 → MC-019; I-04 → MC-017, MC-018, MC-023, MC-025; I-05 → MC-002, MC-004, MC-006 through MC-010, MC-024 through MC-026, MC-028; I-06 → MC-004, MC-016, MC-018, MC-019; I-07 → MC-001 through MC-003, MC-011, MC-025; I-08 → MC-004 through MC-007, MC-010, MC-014 through MC-016, MC-023, MC-026, MC-028; I-09 → MC-008, MC-016; I-10 → MC-012, MC-013, MC-023, MC-026, MC-027; I-11 → MC-004, MC-010, MC-011, MC-020, MC-021, MC-023, MC-026, MC-028  
-Regression coverage: CLI and CWD contracts → MC-018, MC-025; `--new` isolation → MC-017; gates, approval hashes, reviewer ownership, state order, logs, and cost ledger → MC-019; legacy/additive-state compatibility → MC-020, MC-021; syntax and automated negative paths → MC-023; documentation and removed handoff behavior → MC-022; rollback and irreversible issue-state caveat → MC-024; requirements requiring live pipeline or real GitHub verification → MC-001, MC-004, MC-005, MC-008 through MC-014, MC-017, MC-019, MC-020, MC-024, MC-026, MC-028; lock false-refusal recovery → MC-027  
-Removed checks: None.
+Check ID: MC-030
+Priority: P1
+Behavior classification: REGRESSION / STATIC ANALYSIS
+Related behavior: All changed Bash entry points and shared libraries
+Related invariant: INV-1, INV-2, INV-3, INV-5
+Preconditions: `shellcheck` installed; repository configuration unchanged; changed Bash files identified from `.workflow/change.diff`
+Exact action: Run `shellcheck scripts/change-workflow.sh scripts/from-issue.sh scripts/lib/state.sh scripts/lib/issue-close.sh scripts/tests/close-flow-test.sh`
+Expected result: No error-severity findings; every warning or informational finding is reviewed against the affected behavior and either corrected before release or recorded with a specific accepted rationale
+Evidence to capture: `shellcheck --version`, exact command, complete diagnostics, exit code, and disposition of each finding
+Actual result:
+Status: NOT RUN
+
+Check ID: MC-031
+Priority: P0
+Behavior classification: MODIFY / SECURITY / DEVIATION
+Related behavior: Driver origin rewrites preserve authenticated provenance only for the same identity
+Related invariant: INV-1, INV-3
+Preconditions: Three disposable `ANALYZE` fixtures with explicit issue-42 binding: matching `owner/repo<TAB>42<TAB>gh` origin, matching two-field origin, and `other/repo<TAB>99<TAB>gh` origin
+Exact action: Run the driver through its `write_origin` call for each fixture and inspect `.workflow/origin`, then exercise an otherwise eligible close; implementation is at `scripts/change-workflow.sh:242-263`
+Expected result: The matching three-field fixture remains `owner/repo<TAB>42<TAB>gh` and can satisfy the provenance gate; the matching two-field fixture remains two-field and fails closed; the foreign fixture becomes `owner/repo<TAB>42` without inheriting `gh` and fails closed
+Evidence to capture: Origin bytes before and after, explicit environment, close output, GitHub-call log, marker state, and issue state for each fixture
+Actual result:
+Status: NOT RUN
+
+Check ID: MC-032
+Priority: P0
+Behavior classification: MODIFY / IDEMPOTENCY / DEVIATION
+Related behavior: Shared close gate writes durable evidence for wrapper fallback closes
+Related invariant: INV-3
+Preconditions: Eligible `from-issue.sh` run where the driver reaches `COMPLETE` but does not close, the wrapper fallback can close, and no marker exists
+Exact action: Let the wrapper fallback close the issue, inspect `.workflow/issue-closed`, then invoke the wrapper fallback again with the same run and issue; marker write is at `scripts/lib/issue-close.sh:214-215`
+Expected result: The first wrapper close writes `<run-id><TAB><owner/repo><TAB><issue>` and closes exactly once; the second invocation recognizes the same marker and performs no second close; documentation identifies every path capable of writing the shared-gate marker
+Evidence to capture: Driver and wrapper output, marker bytes after each invocation, GitHub-call log, issue history, exit codes, and relevant README excerpts
+Actual result:
+Status: NOT RUN
+
+Check ID: MC-033
+Priority: P1
+Behavior classification: ADD / CONFIGURATION / FAILURE
+Related behavior: `STAGEGATE_CLOSE_TIMEOUT` controls the close deadline
+Related invariant: INV-2, INV-3
+Preconditions: Eligible completion; available `timeout` or `gtimeout`; blocking `gh` stub; independent fixtures with `STAGEGATE_CLOSE_TIMEOUT=1`, `0`, `bogus`, and `-1`; external harness deadline
+Exact action: Invoke each fixture under the external harness and record the exact command constructed at `scripts/lib/issue-close.sh:196-203`
+Expected result: Value `1` terminates the blocking close near one second with the deadline message and no marker; `0` passes zero through to the platform timeout utility and may leave the close unbounded until the harness terminates it; invalid values are rejected by the timeout utility, treated as close failures, and write no marker; every driver-controlled exit releases the lock
+Evidence to capture: Timeout utility/version, environment values, elapsed times, stdout/stderr, utility exit codes, GitHub-call log, state, marker state, and lock state
+Actual result:
+Status: NOT RUN
+
+Check ID: MC-034
+Priority: P1
+Behavior classification: ADD / INTERFACE / REGRESSION
+Related behavior: Test-only source mode can bypass the `from-issue.sh` CLI
+Related invariant: Frozen command interface
+Preconditions: Disposable checkout; `STAGEGATE_FROM_ISSUE_SOURCE_ONLY` independently unset, `0`, and `1`
+Exact action: Invoke `scripts/from-issue.sh --help` and a valid disposable `--change` request under each environment; the early return is at `scripts/from-issue.sh:195-200`
+Expected result: Unset and `0` preserve the documented CLI behavior; `1` exits successfully before argument parsing, fetching, seeding, or workflow execution and creates no artifacts; production launch environments do not set this test hook unintentionally
+Evidence to capture: Environment, commands, stdout/stderr, exit codes, fetch/stage-call logs, filesystem diff, and deployment-environment inspection
+Actual result:
+Status: NOT RUN
+
+Check ID: MC-035
+Priority: P1
+Behavior classification: PRESERVE / CONCURRENCY / UNTESTED
+Related behavior: Cross-driver access to shared `.workflow/state` and `FINAL_AUDIT.md`
+Related invariant: INV-1, INV-2, INV-3
+Preconditions: Disposable checkout; instrumented long-running `stagegate.sh`; second instrumented `change-workflow.sh`; no production issue or GitHub close authority
+Exact action: Start `stagegate.sh`, pause it while it owns shared artifacts, then start `change-workflow.sh`; repeat in reverse order and inspect shared state, audit, verdict, origin, and lock artifacts
+Expected result: Record whether either driver overwrites or consumes the other driver’s artifacts; no GitHub close occurs; any observed cross-driver corruption or unintended dispatch blocks release or is accepted explicitly as the unresolved AR-007 risk recorded in `IMPLEMENTATION_NOTES.md:61-64`
+Evidence to capture: Start order, process/PID timeline, commands, complete outputs, artifact hashes and contents at each event, close-call log, and final cleanup state
+Actual result:
+Status: NOT RUN
+
+Check ID: MC-036
+Priority: P1
+Behavior classification: PRESERVE / REGRESSION / UNTESTED
+Related behavior: Unmodified `stagegate.sh` workflow remains operational beside the new state grammar
+Related invariant: Frozen scope, INV-1
+Preconditions: Disposable checkout with the normal `stagegate.sh` prerequisites and no ambient `STAGEGATE_ORIGIN_*` or `STAGEGATE_RUN_ID`
+Exact action: Run `stagegate.sh` through one controlled stage transition and resume it once from its written state, then compare its stage dispatch and artifacts with the pre-change behavior
+Expected result: The unchanged driver accepts and writes its existing bare stage form, dispatches the same stages, and does not read or create `.workflow/origin`, `.workflow/audit-verdict`, or `.workflow/issue-closed`
+Evidence to capture: Sanitized environment, commands, output, exit codes, state before and after, artifact listing, and comparison with the prior release
+Actual result:
+Status: NOT RUN
+
+Acceptance-criteria traceability:
+AC-B issue-prefixed state and compatible readers: MC-001, MC-002, MC-003, MC-004, MC-006, MC-026, MC-029
+AC-C refuse-not-zero with manual guidance: MC-005, MC-025
+AC-D eligible direct completion closes; ineligible completion does not: MC-007 through MC-019, MC-025, MC-031, MC-032, MC-033
+AC-E lock removal after every controlled exit: MC-014, MC-018, MC-019, MC-020, MC-021, MC-033
+AC automated pass bar and unchanged audit suite: MC-029, MC-030
+AC frozen-scope diff: MC-024, MC-028, MC-034, MC-036
+AC partial-delivery disclosure for Motivation-A: MC-028
+
+Preserved-behavior coverage:
+BEH-C and INV-5 refusal semantics: MC-005
+BEH-E lock ownership and cleanup: MC-020, MC-021
+Legacy bare-state compatibility and unchanged stage order: MC-001, MC-002, MC-006, MC-036
+Existing close skips, wrapper safeguards, and asserted messages: MC-009, MC-013, MC-016, MC-017, MC-025
+Approval and verdict behavior: MC-022
+Unmodified stagegate, defaults, files, and settings: MC-024, MC-028, MC-035, MC-036
+
+Changed-behavior coverage:
+BEH-B state prefix and corruption handling: MC-001 through MC-006
+BEH-D driver-side close and strengthened gate: MC-007 through MC-019
+Origin provenance schema and legacy migration: MC-012, MC-013, MC-026, MC-031
+Retry, marker idempotency, and timeout behavior: MC-014 through MC-019, MC-032, MC-033
+New observability and interfaces: MC-025, MC-034
+
+Invariant coverage:
+INV-1 origin-bound resume and state consistency: MC-001 through MC-006, MC-010 through MC-013, MC-031, MC-035, MC-036
+INV-2 single writer and lock recovery: MC-018 through MC-021, MC-033, MC-035
+INV-3 close authorization, integrity, provenance, and idempotency: MC-007 through MC-019, MC-022, MC-031, MC-032, MC-033
+INV-4 approved-artifact integrity: MC-022
+INV-5 no automatic foreign-state deletion: MC-005
+
+Regression coverage:
+State parsing and completed-state gates: MC-002, MC-003, MC-004, MC-006, MC-036
+Wrong-issue and unauthenticated closure prevention: MC-009, MC-010, MC-012, MC-013, MC-015, MC-031
+Close recovery and double-close prevention: MC-014, MC-016, MC-017, MC-032
+Lock cleanup and concurrency: MC-018, MC-019, MC-020, MC-021, MC-033, MC-035
+Approval, verdict, existing-suite, static-analysis, scope, and CLI regression: MC-022, MC-024, MC-028, MC-029, MC-030, MC-034, MC-036
+
+Removed checks:
+MC-023: Removed because its expected `149` close-flow count is provably inapplicable to the completed suite; `CHANGE_TEST_REPORT.md:87-94` reconciles the implemented count as 181 close-flow plus 26 audit-verdict checks. Replaced by MC-029.

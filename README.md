@@ -261,7 +261,11 @@ that wrapper's path.
 
 `change-workflow.sh` has additional knobs for tracks, per-stage dollar budgets,
 and parallel checklist generation. Defaults and documentation are in the
-header of `scripts/change-workflow.sh`.
+header of `scripts/change-workflow.sh`. One more it is worth knowing about:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `WORKFLOW_CLOSE_ISSUE` | `1` | `0` stops `change-workflow.sh` from closing the originating issue at `COMPLETE` |
 
 ---
 
@@ -270,16 +274,20 @@ header of `scripts/change-workflow.sh`.
 Everything under `.workflow/` is gitignored:
 
 ```
-.workflow/state              current stage
+.workflow/state              current stage, as <STAGE> or <issue>:<STAGE>
 .workflow/approvals/*.sha256 recorded approvals
 .workflow/logs/*.jsonl       raw primary-agent event streams
 .workflow/logs/*.log         reviewer transcripts, speculative stage output
 .workflow/speculative/       input hashes for speculative stages (stagegate.sh)
 .workflow/cost.tsv           per-stage spend ledger (change-workflow.sh)
 .workflow/change.diff        authoritative diff the final audit reads (change-workflow.sh)
+.workflow/issue-closed       which run closed the originating issue (change-workflow.sh)
 ```
 
-To redo a stage, write its name into `.workflow/state` and re-run. To start
+To redo a stage, write its name into `.workflow/state` and re-run. A bare stage
+name is always accepted; `change-workflow.sh` adds the `<issue>:` prefix itself
+when it knows which issue it is working on, and the prefix is informational —
+`.workflow/origin` remains the only thing that decides issue ownership. To start
 over, delete `.workflow/` and the generated `*.md` artifacts.
 
 ---

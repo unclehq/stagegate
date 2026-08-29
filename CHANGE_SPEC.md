@@ -1,178 +1,176 @@
 # Change Spec
 
-Omitted sections: Performance requirements (no perf-sensitive path touched); Migration requirements (no persisted schema/data format changes); Prototype-isolation requirements (not a prototype).
+Omitted sections: Migration requirements (no data migration, only file-format and script edits); Prototype-isolation requirements (no prototype requested)
 
 ## 1. Change type
 
-Feature.
+Bundle of 5 independent sub-changes: Config default (A), Data format (B),
+Safety-mechanism policy (C), Feature/bug fix (D), Verification-only (E, no
+code change expected). Per BASELINE_REPORT.md §16, tracked here as separate
+items so each can be approved/rejected independently rather than as one
+atomic change.
 
 ## 2. Problem statement
 
-`from-issue.sh` seeds `CHANGE_REQUEST.md`/`REQUIREMENTS.md` from a GitHub
-issue but never runs the driver script, and nothing in the repo ever closes
-the seeding issue (BASELINE §4, I-05, I-06). The user wants the seed step to
-chain into the change workflow and, once that workflow reaches a
-satisfactory completion, close the originating issue.
+`CHANGE_REQUEST.md` (from `unclehq/stagegate#3`) bundles 5 asks, one of which
+(A) is internally self-contradictory and one of which (C) conflicts with a
+deliberately-designed existing safety invariant (I-5). This spec resolves what
+can be resolved from the text as written and marks the rest UNRESOLVED,
+per baseline §15-16.
 
 ## 3. Current behavior
 
-See BASELINE §4. Summary: `from-issue.sh` writes the seed file, prints a
-"Run: ..." hint, exits. `change-workflow.sh`'s `COMPLETE` state always exits
-0 regardless of `FINAL_AUDIT.md` verdict (I-06). No code anywhere calls `gh
-issue close`.
+See BASELINE_REPORT.md §4 (B-1 through B-9) and §6. Not restated here.
 
 ## 4. Desired behavior
 
-- Scope: `--change` path only (`from-issue.sh` → `change-workflow.sh`). The
-  `--new` path (`stagegate.sh`) is unaffected — Motivation text says "change
-  workflow" and "completes change-request" specifically (BASELINE §15).
-- `from-issue.sh --change`, after writing `CHANGE_REQUEST.md`, invokes
-  `./scripts/change-workflow.sh` in the same process instead of only
-  printing the hint.
-- `change-workflow.sh` must expose a machine-readable completion signal
-  distinguishing a `READY`/`READY WITH NON-BLOCKING ISSUES` `FINAL_AUDIT.md`
-  verdict from `NOT READY` (I-06 today collapses both to exit 0).
-- The issue is closed **only** when the workflow reaches `COMPLETE` with a
-  `READY` or `READY WITH NON-BLOCKING ISSUES` verdict. A `NOT READY` verdict,
-  or any non-`COMPLETE` exit (human rejection, error, budget exhaustion),
-  leaves the issue open.
-- Issue close requires `gh` (authenticated, `repo` scope). If only the
-  `curl`-fallback fetch path was used (no `gh`), skip the close and print an
-  explicit message — never silently no-op and never fail the whole run for
-  it.
-- The close action posts a comment referencing the completed change (at
-  minimum: a pointer to `FINAL_AUDIT.md`'s verdict) before/while closing —
-  not a silent close — so the audit trail is visible on GitHub.
-- I-07 tension (BASELINE §16): the human-editing window between "seed" and
-  "run driver" must be preserved. Resolution: `from-issue.sh` prints the
-  populated `CHANGE_REQUEST.md` and requires an explicit interactive
-  confirmation before invoking `change-workflow.sh`. This reuses the
-  existing `human_gate`-style exact-word confirmation pattern (I-01) rather
-  than inventing a new one. A `--yes`/non-interactive flag is out of scope
-  (see §16 non-goals) unless CHANGE_PLAN finds it necessary for automation
-  callers.
+**A — Model defaults (opus vs. kimi).** UNRESOLVED — see §16. No spec commitment
+until the human picks one interpretation.
+
+**B — Prepend issue number to `.workflow/state`.** Format changes from a bare
+stage token (`IMPLEMENT`) to an issue-number-prefixed token. Exact delimiter/
+grammar is an implementation decision (out of scope for this doc), but the
+spec commits to: (1) every reader/writer in BASELINE_REPORT.md §6/§13 is
+updated in the same change, (2) `.workflow/origin` remains the sole
+authority for origin-match decisions (I-1) — the issue number in `state` is
+informational/redundant, never a second source of truth, so B does not
+weaken I-1.
+
+**C — Zero `.workflow/state` on issue-number mismatch in `from-issue.sh`.**
+Rejected as literally requested (see §16) — auto-zeroing on mismatch
+reopens AR-001 (I-5). Desired behavior instead: `from-issue.sh` continues to
+refuse and exit 1 on mismatch (current B-5 behavior, unchanged), and prints
+guidance naming the exact manual command to clear state, rather than
+clearing it automatically. No invariant is relaxed.
+
+**D — Close issue on `change-workflow.sh` completion.** Extend issue-closing
+(currently only reachable via `from-issue.sh`'s post-run check, B-9) so that
+`change-workflow.sh` itself closes the originating issue when it reaches
+`COMPLETE`, provided `.workflow/origin` is present and the same READY-verdict
+gating in I-3 is met — regardless of whether the run was launched directly
+or via `from-issue.sh`. `from-issue.sh`'s existing post-run check becomes
+redundant/defensive rather than the only path.
+
+**E — Remove `.workflow/lock/lock` on completion.** No literal file named
+`lock` inside `.workflow/lock/` exists today (baseline §15); the whole
+`.workflow/lock/` directory is already removed on every driver-controlled
+exit path (B-8). Desired behavior: unchanged/PRESERVE. Treated as already
+satisfied pending confirmation of what "lock/lock" was meant to name (§16).
 
 ## 5. Acceptance criteria
 
-1. Running `from-issue.sh <issue> --change` seeds `CHANGE_REQUEST.md`, then
-   prompts for confirmation, then (on confirmation) runs
-   `change-workflow.sh` to completion in the same invocation.
-2. Declining the confirmation prompt leaves `CHANGE_REQUEST.md` written but
-   does not invoke `change-workflow.sh`, and does not touch the GitHub
-   issue.
-3. If `change-workflow.sh` reaches `COMPLETE` with `FINAL_AUDIT.md` verdict
-   `READY` or `READY WITH NON-BLOCKING ISSUES`, the originating issue is
-   closed with a comment, and `gh issue view <n> --jq .state` reports
-   `CLOSED`.
-4. If the verdict is `NOT READY`, or the workflow does not reach
-   `COMPLETE`, the issue remains open.
-5. If the issue was fetched via the `curl` fallback (no authenticated
-   `gh`), the run never attempts a close and prints a message explaining
-   why.
-6. `--new` path behavior (`stagegate.sh`) is byte-for-byte unchanged.
-7. All six scripts still pass `bash -n`; the documented
-   help/version/unknown-arg contract (`scripts/README.md:115-129`) is
-   unchanged for all scripts' existing flags.
+| Item | Acceptance criteria |
+|---|---|
+| A | Human has selected exactly one of {all-opus, all-kimi, per-stage-unchanged, other} before any model-default line is edited. Not satisfied until resolved. |
+| B | Every consumer in baseline §6/§13 (`change-workflow.sh`, `stagegate.sh`, `from-issue.sh`, `scripts/workflow.sh`, `close-flow-test.sh` literal fixtures, `README.md`, `QUICK_START.md`) reads/writes the new format consistently; `close-flow-test.sh` passes at 125/125 in a clean shell. |
+| C | `from-issue.sh --change` invoked with mismatched issue number still refuses (exit 1, non-zero state), and I-1/I-5 remain enforced with no regression in `close-flow-test.sh`'s origin-mismatch cases. |
+| D | A `change-workflow.sh` run started directly (no `from-issue.sh`), with `.workflow/origin` present and a READY/READY_WITH_NON_BLOCKING_ISSUES verdict, closes the originating issue by the time the process exits `COMPLETE`; a non-READY verdict does not close it. |
+| E | `.workflow/lock/` (directory and all contents) is absent immediately after any `change-workflow.sh` exit, success or failure — confirmed by re-running the existing lock-release test cases with no new failures. |
 
 ## 6. Observable behavior table
 
 | ID | Class | Trigger | Current behavior | Expected behavior | Verification |
 |---|---|---|---|---|---|
-| B-01 | MODIFY | `from-issue.sh <issue> --change` completes writing `CHANGE_REQUEST.md` | prints "Run: ./scripts/change-workflow.sh" hint, exits | prints seeded file, prompts for exact-word confirmation | manual run |
-| B-02 | ADD | user confirms at the new prompt | n/a | invokes `./scripts/change-workflow.sh` in-process, streams its output | manual run |
-| B-03 | ADD | user declines/aborts the new prompt | n/a | exits without invoking the driver or GitHub; `CHANGE_REQUEST.md` remains on disk as written | manual run |
-| B-04 | ADD | `change-workflow.sh` reaches `COMPLETE`; `FINAL_AUDIT.md` verdict is `READY`/`READY WITH NON-BLOCKING ISSUES` | n/a (no close exists today) | issue closed via `gh issue close --comment` | `gh issue view <n> --jq .state` == `CLOSED`; comment present |
-| B-05 | ADD | `change-workflow.sh` reaches `COMPLETE`; verdict is `NOT READY` | n/a | issue left open; message printed explaining why | `gh issue view <n> --jq .state` == `OPEN` |
-| B-06 | ADD | workflow run ends in a non-`COMPLETE` state (rejection, error, budget stop) | n/a | issue left open; no close attempted | manual run / state inspection |
-| B-07 | ADD | close is due but only the `curl` fallback path was used to fetch the issue | n/a | close skipped; explicit stderr/stdout message, exit code reflects successful workflow completion (close-skip is not a failure) | manual run with `gh` unauthenticated |
-| B-08 | PRESERVE | `from-issue.sh <issue> --new` / `--new` auto-detected | writes `REQUIREMENTS.md` section, prints hint, exits | unchanged — no auto-run, no close | manual run, diff vs current output |
-| B-09 | PRESERVE | `from-issue.sh` with no args, `--help`, or unrecognized arg | usage to stdout; exit 0 or 1 per BASELINE §6 | unchanged | `bash -n`; re-run BASELINE §8 commands |
-| B-10 | MODIFY | `change-workflow.sh` `COMPLETE` state exit behavior | always `exit 0` regardless of verdict (I-06) | still `exit 0` for a human running it standalone (compat), but now also emits a parseable verdict signal (e.g., a state file or a distinct marker in `.workflow/`) that `from-issue.sh` (or any caller) can read after the process exits | manual run, inspect signal artifact/exit code contract |
+| BEH-A | EXPERIMENTAL | Driver run with no model overrides | B-1/B-2 (tiered opus/sonnet) | UNRESOLVED — no change until human resolves opus-vs-kimi contradiction | N/A until resolved |
+| BEH-B | MODIFY | Any stage transition in either driver | B-4 (bare token, no issue number) | State token carries the current issue number in addition to the stage | Updated `close-flow-test.sh` state-format assertions; manual read of `.workflow/state` after a transition |
+| BEH-C | PRESERVE | `from-issue.sh --change` with mismatched (repo, issue) and non-empty/non-`COMPLETE` state | B-5 (refuse, exit 1, state untouched) | Same refusal; message additionally names the manual-clear command | Existing `close-flow-test.sh` `preflight-origin-mismatch`/`preflight-origin-absent` cases continue passing; manual message check |
+| BEH-D | MODIFY | `change-workflow.sh` reaches `COMPLETE` with `.workflow/origin` set and READY verdict, run started directly (not via `from-issue.sh`) | B-9 gap: issue stays open (only `from-issue.sh`'s post-run path closes it) | Issue is closed by `change-workflow.sh` itself before/at exit | New test case mirroring existing `close-flow-test.sh` verdict-record-written / issue-close cases, run without the `from-issue.sh` wrapper |
+| BEH-E | PRESERVE | Any `change-workflow.sh` exit | B-8 (`.workflow/lock/` removed via EXIT trap) | Unchanged | Existing `close-flow-test.sh` lock cases (`lock-held-by-live-pid`, `lock-stale-pid-cleared`) |
 
 ## 7. Invariant table
 
 | ID | Status | Invariant | Scope | Enforcement point | Verification |
 |---|---|---|---|---|---|
-| I-01 | EXISTING | Approval-requiring transitions block on exact-word interactive human response | `change-workflow.sh` internal stages | `human_gate()` | manual |
-| I-02 | EXISTING | Approved artifacts are SHA-256 pinned; post-approval edits halt the pipeline | `change-workflow.sh` | `verify_approval()` | manual |
-| I-03 | EXISTING | Reviewer-owned files written only via reviewer-CLI call sites | `change-workflow.sh` | state-machine call sites | structural read |
-| I-04 | EXISTING | Every script runnable from any CWD | all scripts | `ROOT=...; cd "$ROOT"` | manual |
-| I-05 | RELAXED | `from-issue.sh` never mutates GitHub state | `from-issue.sh` (`--change` path only) | new `gh issue close`/`gh issue comment` call, gated on B-04 | manual: verify no close/comment on decline (B-03), `NOT READY` (B-05), non-`COMPLETE` (B-06), or curl-fallback (B-07) |
-| I-06 | STRENGTHENED | `change-workflow.sh` `COMPLETE` exit is independent of/decoupled from verdict text | `change-workflow.sh` | `COMPLETE` state | now also emits a machine-readable verdict signal alongside the unchanged `exit 0`; manual run |
-| I-07 | STRENGTHENED | A human gets an editing/review window on `CHANGE_REQUEST.md` before the driver runs | `from-issue.sh --change` path | new explicit confirmation prompt (replaces the implicit "user manually re-runs" window with an explicit in-process gate) | manual: decline path (B-03) leaves driver un-invoked |
-| I-08 | NEW | An issue is closed only on a `READY`/`READY WITH NON-BLOCKING ISSUES` verdict, never on `NOT READY` or an incomplete run | `from-issue.sh --change` post-workflow step | close logic reads `FINAL_AUDIT.md` verdict (or the new B-10 signal) before calling `gh issue close` | manual: B-04 vs B-05 vs B-06 |
-| I-09 | NEW | A close attempt without authenticated `gh` never silently no-ops and never crashes the run | `from-issue.sh --change` post-workflow step | explicit fallback-path check before close | manual: B-07 |
+| INV-1 | EXISTING | A resumed run may not act on `.workflow/state` unless `.workflow/origin` proves it belongs to the current (repo, issue) (=I-1) | Both drivers, `from-issue.sh` | `change-workflow.sh:191-218`, `from-issue.sh:47-67` | `close-flow-test.sh` origin-mismatch cases must keep passing after BEH-B/BEH-C |
+| INV-2 | EXISTING | Only one `change-workflow.sh` may hold a checkout at a time (=I-2) | `change-workflow.sh` | `mkdir` lock, `:147-183` | `close-flow-test.sh` lock cases |
+| INV-3 | STRENGTHENED | The GitHub issue is closed only when the verdict record's run id, origin binding, and `FINAL_AUDIT.md` hash all match the current run (=I-3, extended to fire from inside `change-workflow.sh` per BEH-D, not only from `from-issue.sh`) | Both entry points | `from-issue.sh:132-211` (existing) + new enforcement inside `change-workflow.sh` (BEH-D) | New test case (§6 BEH-D) plus existing `close-flow-test.sh` verdict cases |
+| INV-4 | EXISTING | An approved artifact whose bytes change is re-hashed and rejected (=I-4) | `change-workflow.sh` | `verify_approval` | Not otherwise exercised by this change; no code path here touches it |
+| INV-5 | EXISTING — NOT RELAXED | `.workflow/state` is never auto-deleted to resolve a foreign-owner conflict (=I-5) | `from-issue.sh` preflight | Refuse-not-zero design, `UPDATED_CHANGE_PLAN.md:53` | `close-flow-test.sh` origin-mismatch cases; CR Motivation-C's literal "zero state" ask is REJECTED to keep this invariant intact — see §16 |
 
-**I-05 is RELAXED** by explicit request (Motivation: "close issue"). Requires
-human approval before implementation per CLAUDE.md rule on RELAXED
-invariants.
+No invariant here is RELAXED or REMOVED. INV-5 is explicitly flagged: the
+change request's literal text (Motivation-C) asks for behavior that would
+relax it; this spec rejects that reading rather than relaxing the invariant,
+per baseline §15 and core rule 6/13. If the human wants INV-5 actually
+relaxed, that requires a separate, explicit approval re-opening this
+decision.
 
 ## 8. Compatibility requirements
 
-- `from-issue.sh --new` output and behavior: unchanged (B-08).
-- `from-issue.sh` help/version/unknown-arg contract (BASELINE §6, §8):
-  unchanged (B-09).
-- `change-workflow.sh` standalone CLI contract (`-h`, `--version`, unknown
-  arg, exit codes): unchanged. Its `COMPLETE` state still `exit 0`s for a
-  human running it directly (B-10) — no behavior change for existing
-  standalone callers, only an addition.
-- Users who invoke `from-issue.sh --change` non-interactively (e.g. from a
-  script) today get the old print-and-exit behavior; under this change they
-  will hit the new confirmation prompt and block. This is a deliberate,
-  human-approval-required compatibility break for that calling pattern — see
-  §16 non-goals re: a `--yes` flag.
+- BEH-B changes an on-disk file format read by 5+ consumers (baseline §6);
+  all must move together in the same change — no dual-format transition
+  period, since nothing else depends on the old format surviving.
+- `README.md`, `scripts/README.md`, `QUICK_START.md` documented contracts
+  (baseline §6, §13) must be updated in the same change as BEH-B/BEH-D to
+  avoid drift.
 
 ## 9. Error and failure behavior
 
-| Condition | Required behavior |
-|---|---|
-| `gh` not authenticated / missing at close time, but was available at fetch time | treat as B-07 (skip + message), not a hard failure |
-| `gh issue close` call fails (network, permissions) | print the error, exit non-zero; do not report the change as incomplete/failed — the workflow itself already completed |
-| `change-workflow.sh` invoked from `from-issue.sh` exits non-zero / is interrupted | no close attempted; propagate the failure to the user clearly |
-| Confirmation prompt receives EOF/non-exact input | treat as decline (B-03), matching existing `human_gate()` exact-word semantics (I-01) |
+- BEH-D: if `.workflow/origin` is absent, or the verdict is not
+  READY/READY_WITH_NON_BLOCKING_ISSUES, `change-workflow.sh` must not attempt
+  to close the issue and must not error the run — completion proceeds,
+  closing is simply skipped (mirrors current `from-issue.sh` behavior,
+  `scripts/from-issue.sh:132-211`).
+- BEH-C: refusal path's exit code (1) and untouched-state guarantee are
+  unchanged; only the printed message gains the manual-clear hint.
 
-## 10. Security requirements
+## 10. Performance requirements
 
-- The new `gh issue close`/`gh issue comment` call is the first
-  GitHub-write capability in this codebase (I-05 relaxation) — confine it to
-  the single call site gated by the confirmation (I-07) and the verdict
-  check (I-08); do not introduce a general-purpose GitHub-write helper.
-- No new persisted credentials; reuse the existing `gh` auth session
-  (BASELINE §8: already scoped to `repo`).
+None stated or implied; no change here is performance-sensitive.
 
-## 11. Rollback expectations
+## 11. Security requirements
 
-Revert to current `from-issue.sh`/`change-workflow.sh` behavior (print hint,
-no auto-run, no close) by reverting the change's commits — no data
-migration or state cleanup required since `.workflow/` state and
-`CHANGE_REQUEST.md` formats are unchanged.
+- BEH-D must reuse the existing hash/run-id/origin triple-check (I-3) rather
+  than introduce a second, looser gate for the direct-run path — a weaker
+  duplicate check would let a stale or foreign run close an issue it
+  doesn't own.
 
-## 12. Explicit non-goals
+## 12. Rollback expectations
 
-- `--new`/`stagegate.sh` auto-run and auto-close (BASELINE §15) — out of
-  scope, `--change` only.
-- A `--yes`/non-interactive bypass flag for the new confirmation prompt.
-- Any change to `codex-review-plan.sh`, `codex-create-checklist.sh`,
-  `workflow.sh`, or `prompts/**` contents (BASELINE §14).
-- Closing via the `curl`-only fallback path (no `gh` credential equivalent
-  exists or is being added) — always skip with a message (B-07).
+- Each of A/B/C/D/E is independently revertible: B is a file-format change
+  confined to this repo's own scripts/tests/docs (no external consumers
+  identified); D adds a code path but does not remove the existing
+  `from-issue.sh` closing path, so reverting D leaves B-9 behavior intact;
+  C makes no code change (rejects the request); E makes no code change.
 
-## 13. Assumptions and unresolved questions
+## 13. Explicit non-goals
 
-- ASSUMED: "completes change-request" (Motivation) means `change-workflow.sh`
-  reaching `COMPLETE` with a `READY`/`READY WITH NON-BLOCKING ISSUES`
-  verdict, not merely reaching `COMPLETE` (I-06 today doesn't distinguish).
-  Flagged for explicit approval given it's a RELAXED-invariant (I-05) design
-  choice.
-- ASSUMED: the confirmation prompt at B-01/I-07 is an acceptable
-  reinterpretation of "run automatically" — the request text says
-  "automatically," which is in tension with preserving a human edit window.
-  Resolution favors CLAUDE.md's "never bypass an approval gate" over literal
-  "automatic." Needs explicit human sign-off.
-- UNRESOLVED: exact mechanism for the B-10 machine-readable verdict signal
-  (new `.workflow/` file vs. exit-code convention vs. parsing
-  `FINAL_AUDIT.md` directly from `from-issue.sh`) is left to CHANGE_PLAN —
-  this spec fixes the observable contract (I-06/I-08), not the mechanism.
-- UNRESOLVED: whether the close comment should link `.workflow/change.diff`,
-  quote the audit verdict, or both — left to CHANGE_PLAN; acceptance
-  criterion 3 only requires a comment to exist.
+- Not touching `stagegate.sh`'s new-application-only behavior beyond any
+  shared model/CLI defaults resolved under A (baseline §14).
+- Not implementing literal "zero `.workflow/state` on mismatch" (Motivation-C)
+  — see INV-5 and §16.
+- Not writing a `kimi` CLI wrapper or validating `kimi` flag-compatibility —
+  out of scope until A is resolved.
+- Not modifying `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`,
+  `GOOD_FIRST_ISSUES.md`, `STRATEGY.md`, `AGENTIC.md`, or `prompts/` bodies
+  (baseline §14).
+
+## 14. Assumptions and unresolved questions
+
+Carried forward from baseline §15, with resolutions/dispositions:
+
+1. **A (opus vs. kimi) — UNRESOLVED.** Summary says "everything opus";
+   Motivation-A says "everything kimi." No default-model edit proceeds to
+   CHANGE_PLAN.md until the human states which is meant (or a third option:
+   leave per-stage tiering as-is).
+2. **A — "kimi" drop-in feasibility — UNRESOLVED.** Even once direction is
+   picked, whether `kimi` accepts the same CLI flags as `claude`/`codex`
+   (required per `README.md:258-260`) is unverified; no `kimi` binary
+   available in this environment to test.
+3. **C (zero-state-on-mismatch) — RESOLVED as rejected**, per INV-5/§16:
+   implementing it literally would reopen AR-001. This spec substitutes
+   BEH-C (refuse + better message) as the compliant interpretation of the
+   underlying request ("so `change-workflow.sh` will complete properly" —
+   satisfied by telling the operator how to clear state safely, not by
+   auto-clearing it).
+4. **B (state format) — RESOLVED as additive-safe, format-changing.** The
+   issue number is added to the token consumers already parse; `.workflow/
+   origin` remains the sole trust source for INV-1, so the format change
+   does not itself weaken any invariant. Exact grammar left to CHANGE_PLAN.md
+   (implementation detail).
+5. **E ("lock/lock") — UNRESOLVED naming, RESOLVED behaviorally.** No such
+   file exists; `.workflow/lock/` directory removal already satisfies the
+   apparent intent (B-8). If the human meant a different, currently
+   nonexistent path, this spec does not cover it — needs clarification.
+6. CHANGE_REQUEST.md itself supplies no acceptance criteria, constraints, or
+   out-of-scope list (baseline §1) — §5/§13 above are this document's
+   substitute, subject to human approval.

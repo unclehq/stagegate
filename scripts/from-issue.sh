@@ -17,22 +17,28 @@ STATE_DIR=".workflow"
 STATE_FILE="$STATE_DIR/state"
 ORIGIN_FILE="$STATE_DIR/origin"
 VERDICT_FILE="$STATE_DIR/audit-verdict"
+MARKER_FILE="$STATE_DIR/issue-closed"
 CONFIRM_WORD="RUN"
 
+# .workflow/state grammar, and the shared INV-3 close gate the driver also uses.
+. "$ROOT/scripts/lib/state.sh"
+. "$ROOT/scripts/lib/issue-close.sh"
+
 workflow_state() {
-    if [[ -s "$STATE_FILE" ]]; then
-        cat "$STATE_FILE"
-    fi
+    state_read "$STATE_FILE"
 }
 
 origin_line() {
     if [[ -s "$ORIGIN_FILE" ]]; then
-        cat "$ORIGIN_FILE"
+        head -n 1 "$ORIGIN_FILE"
     fi
 }
 
-this_origin() {
-    printf '%s\t%s' "$OWNER/$REPO" "$ISSUE_NUM"
+# .workflow/origin's first two fields name this invocation's issue. The third
+# field is fetch provenance and is deliberately not part of the identity.
+origin_matches_this() {
+    [[ "$(origin_field "$ORIGIN_FILE" 1)" == "$OWNER/$REPO" \
+        && "$(origin_field "$ORIGIN_FILE" 2)" == "$ISSUE_NUM" ]]
 }
 
 # True when this checkout holds a change run that has started and not finished.
@@ -46,12 +52,17 @@ run_in_flight() {
 # resumed, or closed against.
 check_origin_or_refuse() {
     local owner
+
+    # Mirror of the driver's preflight: a state file bound to one issue beside
+    # an origin naming another is corruption, not a foreign-owner conflict.
+    state_origin_agree "$STATE_FILE" "$ORIGIN_FILE" || exit 1
+
     if ! run_in_flight; then
         return 0
     fi
 
     owner="$(origin_line)"
-    if [[ "$owner" == "$(this_origin)" ]]; then
+    if origin_matches_this; then
         return 0
     fi
 
@@ -63,13 +74,29 @@ check_origin_or_refuse() {
         echo "  $ORIGIN_FILE: absent — the in-flight state has no provable owner"
     fi
     echo "Finish or reset that run before seeding a different issue."
+    echo "To clear it deliberately, once you are sure no other run is active:"
+    echo "  rm -f $STATE_FILE $ORIGIN_FILE"
     exit 1
 }
 
 # True when the CHANGE_REQUEST.md on disk already belongs to this issue's
 # in-flight run, in which case rewriting it would discard hand edits.
 seed_is_current() {
-    run_in_flight && [[ "$(origin_line)" == "$(this_origin)" ]]
+    run_in_flight && origin_matches_this
+}
+
+# .workflow/origin's third field records how this binding was fetched. Only an
+# authenticated gh fetch can later authorize a close; a two-field file written
+# before this field existed reads as `curl` and fails closed.
+write_origin() {
+    local fetch="curl"
+
+    if [[ "${USED_GH:-0}" == "1" ]]; then
+        fetch="gh"
+    fi
+
+    mkdir -p "$STATE_DIR"
+    printf '%s\t%s\t%s\n' "$OWNER/$REPO" "$ISSUE_NUM" "$fetch" > "$ORIGIN_FILE"
 }
 
 confirm_and_run_workflow() {
@@ -108,8 +135,7 @@ confirm_and_run_workflow() {
         return 0
     fi
 
-    mkdir -p "$STATE_DIR"
-    printf '%s\t%s\n' "$OWNER/$REPO" "$ISSUE_NUM" > "$ORIGIN_FILE"
+    write_origin
 
     status=0
     STAGEGATE_RUN_ID="$run_id" \
@@ -126,88 +152,44 @@ confirm_and_run_workflow() {
     close_issue_if_ready "$run_id"
 }
 
-# Closes the issue only when this run's own audit verdict, the origin binding,
-# and the hash of the audited FINAL_AUDIT.md all agree. Any mismatch leaves the
-# issue open with an explanation; none of them is a hard failure.
+# Defensive fallback for the case change-workflow.sh could not close the issue
+# itself. The decision lives in lib/issue-close.sh so both entry points enforce
+# INV-3 through one piece of code; this wrapper adds only the marker check that
+# suppresses a second close and the USED_GH guard for this invocation's fetch.
 close_issue_if_ready() {
     local run_id="$1"
-    local record file_run_id verdict recorded_hash actual_hash comment
+    local marker_run marker_repo marker_issue fetch status
 
-    if [[ ! -s "$VERDICT_FILE" ]]; then
-        echo "No audit verdict was recorded ($VERDICT_FILE is absent);"
-        echo "leaving $OWNER/$REPO#$ISSUE_NUM open."
-        return 0
-    fi
-
-    record="$(head -n 1 "$VERDICT_FILE")"
-    file_run_id="$(printf '%s' "$record" | awk -F'\t' '{print $1}')"
-    verdict="$(printf '%s' "$record" | awk -F'\t' '{print $2}')"
-    recorded_hash="$(printf '%s' "$record" | awk -F'\t' '{print $3}')"
-
-    if [[ -z "$file_run_id" || -z "$verdict" || -z "$recorded_hash" ]]; then
-        echo "Audit verdict record is malformed; leaving $OWNER/$REPO#$ISSUE_NUM open."
-        return 0
-    fi
-
-    if [[ "$file_run_id" != "$run_id" ]]; then
-        echo "Audit verdict belongs to run '$file_run_id', not this run ('$run_id');"
-        echo "leaving $OWNER/$REPO#$ISSUE_NUM open."
-        return 0
-    fi
-
-    if [[ "$(origin_line)" != "$(this_origin)" ]]; then
-        echo "Origin binding no longer names $OWNER/$REPO#$ISSUE_NUM;"
-        echo "leaving the issue open."
-        return 0
-    fi
-
-    if [[ ! -s FINAL_AUDIT.md ]]; then
-        echo "FINAL_AUDIT.md is missing; leaving $OWNER/$REPO#$ISSUE_NUM open."
-        return 0
-    fi
-
-    actual_hash="$(shasum -a 256 FINAL_AUDIT.md | awk '{print $1}')"
-    if [[ "$actual_hash" != "$recorded_hash" ]]; then
-        echo "FINAL_AUDIT.md changed after it was classified;"
-        echo "leaving $OWNER/$REPO#$ISSUE_NUM open."
-        return 0
-    fi
-
-    case "$verdict" in
-        READY|READY_WITH_NON_BLOCKING_ISSUES) ;;
-        *)
-            echo "Final audit verdict: $verdict — leaving $OWNER/$REPO#$ISSUE_NUM open."
+    if [[ -s "$MARKER_FILE" ]]; then
+        marker_run="$(awk -F'\t' 'NR==1{printf "%s", $1}' "$MARKER_FILE")"
+        marker_repo="$(awk -F'\t' 'NR==1{printf "%s", $2}' "$MARKER_FILE")"
+        marker_issue="$(awk -F'\t' 'NR==1{printf "%s", $3}' "$MARKER_FILE")"
+        if [[ "$marker_run" == "$run_id" && "$marker_repo" == "$OWNER/$REPO" \
+            && "$marker_issue" == "$ISSUE_NUM" ]]; then
+            echo "$OWNER/$REPO#$ISSUE_NUM was already closed by change-workflow.sh."
             return 0
-            ;;
-    esac
+        fi
+    fi
 
+    # An unauthenticated curl fetch in *this* invocation cannot close anything,
+    # whatever provenance the origin file on disk records.
+    fetch="$(origin_fetch_method "$ORIGIN_FILE")"
     if [[ "${USED_GH:-0}" != "1" ]]; then
-        echo "Issue was fetched over the unauthenticated curl fallback, which cannot"
-        echo "close issues. Close $OWNER/$REPO#$ISSUE_NUM by hand (verdict: $verdict)."
-        return 0
+        fetch="curl"
     fi
 
-    if ! command -v gh >/dev/null 2>&1; then
-        echo "gh is no longer on PATH; skipping the close."
-        echo "Close $OWNER/$REPO#$ISSUE_NUM by hand (verdict: $verdict)."
-        return 0
-    fi
+    status=0
+    issue_close_if_ready \
+        "$run_id" "$OWNER/$REPO" "$ISSUE_NUM" \
+        "$VERDICT_FILE" "$ORIGIN_FILE" FINAL_AUDIT.md "$MARKER_FILE" \
+        1 1 1 "$fetch" || status=$?
 
-    if ! gh auth status >/dev/null 2>&1; then
-        echo "gh is not authenticated; skipping the close."
-        echo "Close $OWNER/$REPO#$ISSUE_NUM by hand (verdict: $verdict)."
-        return 0
-    fi
-
-    comment="Closed by stagegate: change workflow completed with FINAL_AUDIT.md verdict \`$verdict\`. See FINAL_AUDIT.md and .workflow/change.diff in the working tree."
-
-    if ! gh issue close "$ISSUE_NUM" --repo "$OWNER/$REPO" --comment "$comment"; then
-        echo "gh issue close failed for $OWNER/$REPO#$ISSUE_NUM."
-        echo "The change workflow itself completed; only the close failed."
+    # Skips are informational; only a close that was attempted and failed is a
+    # hard failure on this path.
+    if [[ "$status" == "2" ]]; then
         exit 1
     fi
-
-    echo "Closed $OWNER/$REPO#$ISSUE_NUM (verdict: $verdict)."
+    return 0
 }
 
 # Test hook: sourcing this script with STAGEGATE_FROM_ISSUE_SOURCE_ONLY=1 yields

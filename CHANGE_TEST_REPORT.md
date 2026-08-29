@@ -1,83 +1,94 @@
 # Change Test Report
 
-Every line below was executed in this working tree unless it says `N/A` or
-`NOT RUN`. `N/A` = the check does not apply to this repository or this change.
-`NOT RUN` = it applies and was not executed.
+All commands were run from the repository root with the three ambient stagegate
+variables stripped (`env -u STAGEGATE_ORIGIN_REPO -u STAGEGATE_ORIGIN_ISSUE
+-u STAGEGATE_RUN_ID`), per BASELINE_REPORT.md §10. Every line below was
+executed; nothing is reported from memory.
 
-## Baseline
+## Checks
 
-- `for f in scripts/*.sh; do bash -n "$f"; done` — exit 0 for all 6 scripts, matching BASELINE §9.
-- Argument-contract replay (BASELINE §8 lines 3-7, extended to all six scripts) — 13 invocations, all outputs and exit codes identical to BASELINE §9: `from-issue.sh` no-args/`--help` exit 0, `abc` exit 1; `change-workflow.sh` `--help` exit 0, `--version` `0.1.0`, `bogus` exit 1; `stagegate.sh` same shape; `workflow.sh` no-args exit 1, `--help` exit 0; both codex scripts `--help` exit 0.
-- `git status --porcelain` before editing — 6 pre-existing modified artifacts recorded in IMPLEMENTATION_NOTES.md; none written to.
+| Check | Command | Result |
+|---|---|---|
+| Baseline (before any edit) | `bash scripts/tests/close-flow-test.sh` | PASS — `close-flow-test.sh: 99 checks passed` |
+| Baseline (before any edit) | `bash scripts/tests/audit-verdict-test.sh` | PASS — `audit-verdict-test.sh: 26 checks passed` (125/125 total, matches BASELINE_REPORT.md §9) |
+| Targeted tests | `bash scripts/tests/close-flow-test.sh` | PASS — `close-flow-test.sh: 181 checks passed` (99 pre-existing + 82 new, from 24 new cases) |
+| Regression tests | `bash scripts/tests/close-flow-test.sh` (cases `seed-gate-prefixed-complete-reseeds`, `preflight-prefixed-complete-passes`) | PASS — and both FAIL against a naive `state_read` that does not strip the prefix (fail-first evidence below) |
+| Full test suite | `bash scripts/tests/close-flow-test.sh && bash scripts/tests/audit-verdict-test.sh` | PASS — 181 + 26 = **207 checks passed**, 0 failed |
+| Formatting | N/A (no formatter in this repo; bash only, no `shfmt` configured or committed) |
+| Compiler / type checker | `bash -n` on `scripts/change-workflow.sh`, `scripts/from-issue.sh`, `scripts/lib/state.sh`, `scripts/lib/issue-close.sh`, `scripts/tests/close-flow-test.sh` | PASS — all five parse clean (bash has no compile step; this is the closest equivalent) |
+| Linting | NOT RUN — `shellcheck` is not installed in this environment (`command -v shellcheck` empty). It is also not wired into the repo or CI, so this is not a regression in coverage |
+| Integration tests | `bash scripts/tests/close-flow-test.sh` (end-to-end hermetic driver runs: all `direct-run-*`, `state-*`, `preflight-*`, `lock-*`, and confirm-gate cases) | PASS — included in the 181 |
+| Frontend build | N/A (no frontend; the repo is bash drivers only, BASELINE_REPORT.md §2) |
+| Migration tests | `bash scripts/tests/close-flow-test.sh` (cases `state-bare-still-read`, `state-no-origin-stays-bare`, `legacy-two-field-origin-skips-close`) | PASS — a bare pre-change `.workflow/state` still dispatches and completes; a two-field pre-change `.workflow/origin` is read without error and fails closed at the close gate |
+| Rollback test | `git archive HEAD \| tar x -C /tmp/sg-rollback` then both suites in that tree | PASS — `close-flow-test.sh: 99 checks passed`, `audit-verdict-test.sh: 26 checks passed`. Reverting restores the exact 125/125 baseline with no residue |
+| Rollback (kill switch) | `bash scripts/tests/close-flow-test.sh` (case `direct-run-close-flag-off`) | PASS — `WORKFLOW_CLOSE_ISSUE=0` disables the whole driver-side close, no `gh` call, no marker, exit 0 |
+| Performance checks | N/A (CHANGE_SPEC §10: no performance requirement stated or implied; the change adds local file reads and one already-existing network call) |
+| Security checks | `bash scripts/tests/close-flow-test.sh` (AR-001/003 guard cases) + manual review of the gate | PASS — see "Security" below |
+| Newly introduced warnings | `bash -n` and both suites | None. No new warning text on any path |
+| Pre-existing failures | — | None carried in. The 4 failures BASELINE_REPORT.md §10 describes are the ambient-env artifact; `run_driver` now strips those three variables (approved R-4 fix), so the suite is green from a live stagegate session too |
+| Untested areas | — | See "Untested areas" below |
 
-## Targeted tests
+## Fail-first evidence (acceptance criterion 5)
 
-- `./scripts/tests/audit-verdict-test.sh` — exit 0, 26 checks passed (three documented verdicts, markdown/emphasis stripping, CRLF, trailing blanks, embedded-phrase and concatenated-phrase rejection, case sensitivity, empty/absent file).
-- `./scripts/tests/close-flow-test.sh` — exit 0, 99 checks passed. Covers every row of UPDATED_CHANGE_PLAN §12: decline (wrong word / bare ENTER / EOF), piped-stdin prompt visible and blocking, READY and READY_WITH_NON_BLOCKING_ISSUES close, NOT_READY and UNKNOWN no-close, missing and malformed verdict file, run-id mismatch, origin mismatch, audit-hash mismatch, driver exits 1/7/130 propagated with no close, `USED_GH=0` skip, `gh` unauthenticated skip, `gh` absent skip, `gh issue close` failure → exit 1, seed gate (foreign origin, unowned state, same-origin resume, COMPLETE reseed, fresh checkout), lock held by a live PID, stale lock cleared and released on exit, preflight origin mismatch/absent/COMPLETE-passes, preflight skipped for standalone runs, stale audit rejected, verdict record contents.
-- `./scripts/change-workflow.sh --help`, `--version`, `bogus` after each driver edit — unchanged (exit 0/0/1), and no `.workflow` file created by those paths.
+Each guard was removed in a throwaway copy of the tree and both suites re-run.
+Every guard has at least one case that fails without it.
 
-## Regression tests
+| Guard | Neutered as | Failing case(s) |
+|---|---|---|
+| AR-001 freshness | `origin_bound` check made unconditional | `direct-run-stale-origin-fresh-state-skips-close` (3 checks) |
+| AR-002 sentinel | recorded `-` compared against `${STAGEGATE_RUN_ID:--}` (the natural naive form) | `direct-run-stale-sentinel-run-id-no-retry` (2 checks) |
+| AR-002 retry | retry branch removed | `direct-run-close-retries-on-rerun` (3 checks) |
+| AR-003 provenance | `fetch_method` check made unconditional | `curl-fallback-driver-side-skips-close`, `legacy-two-field-origin-skips-close`, and the pre-existing `curl-fallback-skips-close` (8 checks) |
+| AR-004 corruption | `state_origin_agree` prefix read stubbed to empty | `state-origin-issue-mismatch-refused` (4 checks) |
+| AR-008 timeout | `timeout`/`gtimeout` lookup stubbed to empty | `direct-run-close-timeout-treated-as-failure` (3 checks) |
+| R-1 (BEH-B) | `state_read` no longer strips the prefix | `seed-gate-prefixed-complete-reseeds`, `preflight-prefixed-complete-passes`, `state-prefix-written`, and 12 further cases (34 checks) |
 
-- `--new` byte-diff (AC-6/B-08): pre-change `from-issue.sh` (from `git show HEAD:`) and the changed one, each run in a scratch checkout against `https://github.com/unclehq/stagegate/issues/2 --new` — stdout, exit code, and resulting `REQUIREMENTS.md` all identical.
-- End-to-end `--change` decline in a scratch checkout with a poisoned driver stub (`exit 9`): `CHANGE_REQUEST.md` written, prompt shown, decline honored, driver never invoked, exit 0, no `.workflow/` directory created — so a decline leaves no origin claim.
-- Driver standalone guard (§17): `preflight-standalone-unaffected` in `close-flow-test.sh` — with a foreign `.workflow/origin` and in-flight state but no `STAGEGATE_ORIGIN_*`, the preflight does not fire.
-- `.workflow/state` in this repository still reads `IMPLEMENT`; `.workflow/` contents unchanged from the pre-implementation listing.
+## Protected-file verification (acceptance criterion 4)
 
-## Full test suite
+`git diff HEAD --stat` over `scripts/stagegate.sh`, `scripts/workflow.sh`,
+`scripts/lib/audit-verdict.sh`, `scripts/codex-review-plan.sh`,
+`scripts/codex-create-checklist.sh`, `prompts/`, `QUICK_START.md`,
+`scripts/tests/audit-verdict-test.sh`, `MANUAL_CHECKLIST.md`, `FINAL_AUDIT.md`:
+**empty**. `ADVERSARIAL_REVIEW.md` and `CHANGE_REQUEST.md` carry the same
+uncommitted diffs they had before this stage began and were not touched.
+A grep of the `change-workflow.sh` diff for `MODEL_*`, `EFFORT_*`, `BUDGET_*`,
+`CODEX_EFFORT_*`, `AGENT_CMD`, `REVIEWER_CMD`, `CLAUDE_TOOLS`, the cost ledger,
+the lock functions, and `verify_approval`: **no hits**.
 
-- `for f in scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh; do bash -n "$f"; done` — exit 0 for all 9 files (AC-7).
-- `./scripts/tests/audit-verdict-test.sh && ./scripts/tests/close-flow-test.sh` — exit 0; 125 assertions total. These two scripts are the repository's entire automated suite (BASELINE §7: none existed before).
+## Security
 
-## Formatting
-
-- N/A (no formatter configured for shell in this repository; BASELINE §2).
-
-## Compiler or type checker
-
-- N/A (bash; `bash -n` is the equivalent and is reported above).
-
-## Linting
-
-- `command -v shellcheck` — not installed; N/A (pre-existing, BASELINE §7/§10; shellcheck is not a repository dependency).
-
-## Integration tests
-
-- `./scripts/tests/close-flow-test.sh` doubles as the integration check: it runs the real `change-workflow.sh` and the real `from-issue.sh` functions against a scratch checkout with stubbed `gh` and stubbed reviewer. No live agent pipeline was run.
-
-## Frontend build
-
-- N/A (no frontend).
-
-## Migration tests
-
-- N/A (no persisted format migrates; `.workflow/origin`, `.workflow/lock/`, and the widened `.workflow/audit-verdict` are new files treated as absent-if-missing — asserted by `missing-verdict-file`, `seed-gate-fresh-checkout`, and `preflight-origin-absent`).
-
-## Rollback test
-
-- `git show HEAD:scripts/from-issue.sh` was extracted and executed in a scratch checkout as part of the `--new` byte-diff above: the pre-change script runs unmodified against this tree, so `git revert` restores working behavior. Deleting `scripts/lib/`, `scripts/tests/`, and the new `.workflow` files is inert — nothing else reads them (UPDATED_CHANGE_PLAN §14). Already-closed GitHub issues are not reopened by a rollback; unchanged from the plan.
-
-## Performance checks
-
-- N/A (no perf-sensitive path touched; CHANGE_SPEC §3 omits performance requirements). The added work per run is one `mkdir`, one `sha256`, and three small file reads.
-
-## Security checks
-
-- `gh issue close` appears exactly once in the repository (`scripts/from-issue.sh`), reached only after eight independent conditions hold; verified by reading the file and by the twelve negative-path cases in `close-flow-test.sh` that assert *no* `gh issue close` call reaches the stub.
-- No new credential is stored; the existing `gh` session is reused, and `gh auth status` is re-checked at close time.
-- `git check-ignore -v .workflow/origin .workflow/audit-verdict .workflow/lock/pid` — all ignored via `.gitignore:1`; no new state can be committed accidentally.
-
-## Newly introduced warnings
-
-- None observed in any of the runs above.
-
-## Pre-existing failures
-
-- None. `shellcheck` absence is pre-existing (BASELINE §10) and unchanged.
+- AR-001: a fresh run that merely finds a leftover `.workflow/origin` cannot
+  close anything. Proven by `direct-run-stale-origin-fresh-state-skips-close`.
+- AR-003: B-9's "a curl-fetched origin never authorizes a write" promise now
+  applies to the driver-side path too, and a legacy two-field origin fails
+  closed rather than gaining authority it never had.
+- AR-004: a state/origin issue disagreement refuses with exit 1 and leaves the
+  state file byte-identical (asserted).
+- INV-3 is enforced by exactly one function, called by both entry points; there
+  is no second, looser gate. CHANGE_SPEC §11 satisfied.
+- INV-5 is untouched: `from-issue.sh` still refuses and never zeroes state. The
+  only change is the added manual-clear guidance line.
+- AR-008: the close runs under a 30s deadline (`timeout`/`gtimeout`); a timeout
+  is a close failure — warning, no marker, exit 0, retryable later.
 
 ## Untested areas
 
-- A real `gh issue close` against a live issue (M-04) and a real `NOT READY` audit leaving an issue open (M-05): both need a full agent-pipeline run and an irreversible GitHub write, so they are covered only by the stubbed decision path. They remain manual checks.
-- M-07 with the real `gh` binary logged out (the automated case stubs `gh auth status` and strips `gh` from `PATH` instead).
-- M-10 is covered, not untested: all six scripts were run from `/tmp` by absolute path (`--help`, exit 0, correct usage for each), and `close-flow-test.sh` invokes the driver by absolute path with a CWD outside its `ROOT`, exercising the self-relative `source` of `scripts/lib/audit-verdict.sh` through the `FINAL_AUDIT` classifier call.
-- Cross-clone concurrent runs against one issue — out of scope by UPDATED_CHANGE_PLAN §22, not tested.
-- Stale-lock PID reuse — cannot be provoked deterministically; safe direction only (false refusal, never false proceed).
+- `scripts/stagegate.sh` — deliberately unmodified (AR-007/AR-009) and still
+  uncovered by any automated suite, exactly as at baseline.
+- Item A (opus vs. kimi) — no code, no test; not delivered.
+- A real `gh` call against a real GitHub issue. All `gh` interaction is stubbed;
+  MV-4, MV-5, MV-7, MV-8 cover it by hand.
+- `verify_approval` / INV-4 — unchanged and, as at baseline, not exercised by
+  either suite (BASELINE_REPORT.md §5, I-4, confidence Medium).
+- The AR-008 no-`timeout`-available fallback path — this host has both binaries,
+  so the degraded branch is reasoned about, not executed.
+- Concurrency: the cross-driver race (AR-007) is not tested, being out of scope.
+
+## Acceptance-criteria note
+
+UPDATED_CHANGE_PLAN §"Exact acceptance criteria" item 2 predicts "149 checks".
+The actual total is **207**. The arithmetic there adds *case* counts (~16 + 8)
+to a *check* count (125); the suites count assertions, not cases. The substantive
+bar — every pre-existing check green with no message-string edits, plus every new
+case green — is met: 99/99 pre-existing close-flow checks still pass, all 24 new
+cases pass (82 checks), and `audit-verdict-test.sh` is unchanged at 26/26.

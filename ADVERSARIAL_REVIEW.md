@@ -1,109 +1,122 @@
-## AR-001: Stale workflow state can close the wrong issue
+## AR-001: Standalone runs can close the wrong issue from stale origin state
 
 - Severity: Critical
-- Affected behavior: B-04 and B-06
-- Affected invariant: I-08
-- Affected component: `scripts/from-issue.sh` dispatch and `scripts/change-workflow.sh` state machine
-- Failure scenario: Issue B overwrites `CHANGE_REQUEST.md` while `.workflow/state` remains at `IMPLEMENT`, `EXECUTE_CHECKLIST`, or `FINAL_AUDIT` for issue A; the resumed workflow audits A’s artifacts, labels the verdict with B’s new run ID, and closes issue B.
-- Evidence: `from-issue.sh:158-205` unconditionally overwrites the request, while `change-workflow.sh:507-669` resumes shared state and only reads `CHANGE_REQUEST.md` in `ANALYZE`; CHANGE_PLAN §22 acknowledges this exact risk but accepts a warning as mitigation.
-- Why current tests may miss it: M-09 only checks that a warning appears and never verifies that confirmation is blocked or that the wrong issue cannot close.
-- Recommended correction: Bind workflow state to the originating repository, issue, and approved request hash; refuse continuation on any mismatch rather than warning.
-- Proposed verification: Seed issue A, advance to every resumable state, then seed issue B and prove the driver cannot run or close either issue until state ownership is resolved.
+- Affected behavior: BEH-D
+- Affected invariant: INV-1 and INV-3
+- Affected component: `scripts/change-workflow.sh` direct-run completion path
+- Failure scenario: After issue A leaves `.workflow/origin` behind, an operator clears only `.workflow/state`, creates a request for issue B, and runs the driver directly; the planned audit records run id `-` and closes issue A using the stale origin.
+- Evidence: Current standalone preflight returns immediately without `STAGEGATE_ORIGIN_*` (`scripts/change-workflow.sh:191-198`), `write_origin` also does nothing (`:220-223`), while CHANGE_PLAN §1/§4 explicitly lets direct runs close from `.workflow/origin`.
+- Why current tests may miss it: `direct-run-closes` deliberately supplies an origin and expects closure without proving that origin belongs to the current `CHANGE_REQUEST.md`, thereby validating the unsafe behavior.
+- Recommended correction: Require durable close intent freshly created by `from-issue.sh` or an explicit standalone identity plus request binding; never infer close authority from an arbitrary leftover `.workflow/origin`.
+- Proposed verification: Start with stale origin A, absent state, and a request for B; complete a direct READY run and assert that neither issue is closed without fresh explicit close authority.
 - Blocks implementation: Yes
 
-## AR-002: A stale audit can be relabeled as current and authorize closure
-
-- Severity: Critical
-- Affected behavior: B-04
-- Affected invariant: I-08
-- Affected component: `run_codex`, `FINAL_AUDIT`, and `.workflow/audit-verdict`
-- Failure scenario: An old `FINAL_AUDIT.md` says `READY`; the reviewer command exits successfully without replacing it; `require_file` accepts the stale file, and the new code writes the current run ID beside its verdict and closes the current issue.
-- Evidence: `change-workflow.sh:393-420` does not remove or freshness-check the output before `run_codex`, `require_file` at lines 116-120 checks only non-emptiness, while the background equivalent explicitly removes its output at line 443; CHANGE_PLAN §1 writes the run ID only after this unchecked read.
-- Why current tests may miss it: The classifier fixtures test file contents, not whether the audit was produced by the current reviewer invocation.
-- Recommended correction: Write the audit to a fresh temporary path, require successful production, then atomically publish it and bind the signal to both its hash and the workflow-generation identity.
-- Proposed verification: Precreate a `READY` audit, run a reviewer stub that exits 0 without writing output, and assert a hard failure with no verdict signal and no GitHub call.
-- Blocks implementation: Yes
-
-## AR-003: Concurrent runs can attach one issue’s verdict to another run ID
+## AR-002: A transient close failure becomes permanently terminal
 
 - Severity: High
-- Affected behavior: B-04 and B-05
-- Affected invariant: I-08
-- Affected component: Shared `.workflow` state, `FINAL_AUDIT.md`, logs, and verdict signal
-- Failure scenario: Two confirmed invocations run `FINAL_AUDIT` concurrently; one overwrites `FINAL_AUDIT.md` between the other invocation’s reviewer return and classification, causing the latter to record its own run ID with the other issue’s verdict and close incorrectly.
-- Evidence: `change-workflow.sh:30-37` and 663-669 use fixed shared paths; CHANGE_PLAN §11 claims concurrency can cause only missed closes, but the run ID identifies the classifier process, not the producer or subject of `FINAL_AUDIT.md`.
-- Why current tests may miss it: No planned check overlaps two reviewer invocations, and single-process classifier fixtures cannot expose shared-file races.
-- Recommended correction: Serialize the entire workflow with an atomic lock or isolate every run’s artifacts and state under a unique directory.
-- Proposed verification: Use two coordinated reviewer stubs that interleave output writes and prove that neither invocation can consume or close from the other’s audit.
+- Affected behavior: BEH-D
+- Affected invariant: The originating issue is closed when an eligible workflow completes
+- Affected component: `scripts/change-workflow.sh` `FINAL_AUDIT`/`COMPLETE`
+- Failure scenario: `gh issue close` fails once, the driver writes `COMPLETE` and exits 0, and every later direct rerun skips closing because `VERDICT_WRITTEN_THIS_RUN` is no longer set.
+- Evidence: CHANGE_PLAN §7 and §12 prescribe `COMPLETE` plus exit 0 on close failure, while §1 requires the in-process flag before any close attempt.
+- Why current tests may miss it: `direct-run-close-fails-still-completes` blesses the terminal failure but no test retries the completed run.
+- Recommended correction: Persist a pending close intent and retry it safely from `COMPLETE`, or represent close failure as a retryable state/nonzero outcome rather than irreversible success.
+- Proposed verification: Fail the first close, rerun with healthy `gh`, and assert exactly one eventual successful close with matching run, origin, and audit hash.
 - Blocks implementation: Yes
 
-## AR-004: Normal pause and resume loses issue-close provenance
+## AR-003: Driver-side closing bypasses the curl-fallback safeguard
 
 - Severity: High
-- Affected behavior: B-02, B-03, B-04, and documented resumability
-- Affected invariant: I-07 and I-08
-- Affected component: `human_gate`, `from-issue.sh`, and run-ID lifecycle
-- Failure scenario: A user declines an internal gate, causing the child driver to exit 0; resuming with `change-workflow.sh` has no parent close step and records run ID `-`, while resuming with `from-issue.sh` overwrites the human-edited request and creates a new identity over old state.
-- Evidence: `human_gate` exits the driver at `change-workflow.sh:223-225`; README:189-190 promises rerun-based resumption; CHANGE_PLAN persists the ID only when `FINAL_AUDIT` runs and provides no durable originating-issue context before then.
-- Why current tests may miss it: M-06 stops after confirming no immediate close and never resumes through completion or checks preservation of edited `CHANGE_REQUEST.md`.
-- Recommended correction: Persist origin and workflow-generation metadata before launch and provide a resume path that neither refetches nor rewrites the request.
-- Proposed verification: Pause at each human gate, terminate the wrapper, resume using the documented command, and prove the original issue closes exactly once without changing the seeded request.
+- Affected behavior: BEH-D and backward compatibility of B-9
+- Affected invariant: An unauthenticated issue fetch must not authorize a GitHub write
+- Affected component: `scripts/from-issue.sh`, `scripts/lib/issue-close.sh`, `scripts/change-workflow.sh`
+- Failure scenario: `gh issue view` fails, the issue is fetched with curl, but `gh auth status` and `gh issue close` later succeed; the driver closes an issue that current behavior promises to leave open.
+- Evidence: `USED_GH` is local and unexported (`scripts/from-issue.sh:308-319`), only run/origin variables reach the driver (`:115-118`), and the planned driver gate checks live `gh` availability rather than authenticated-fetch provenance.
+- Why current tests may miss it: Existing `curl-fallback-skips-close` uses the fake driver, while the proposed direct-driver cases do not traverse the curl path.
+- Recommended correction: Persist and pass authenticated close eligibility as part of the close-intent record; the driver must fail closed when that provenance is absent.
+- Proposed verification: Use `from-issue.sh` with curl-selected fetch and the real stubbed driver, make later auth/close commands succeed, and assert no close or marker.
 - Blocks implementation: Yes
 
-## AR-005: Verdict parsing can turn malformed audit prose into READY
+## AR-004: The issue prefix is discarded precisely where mismatch detection is required
 
 - Severity: High
-- Affected behavior: B-04 and B-05
-- Affected invariant: I-08
-- Affected component: `scripts/lib/audit-verdict.sh`
-- Failure scenario: An audit concludes `NOT READY` but emits a trailing footer such as “rerun until READY”; the last-phrase algorithm classifies `READY` and closes the issue.
-- Evidence: CHANGE_PLAN §1 searches the last line containing a phrase anywhere, although `prompts/change/final-audit.md:54-58` defines the verdict as an exact conclusion line.
-- Why current tests may miss it: The proposed fixtures cover verdict phrases inside earlier findings, but not text after the conclusion or a verdict phrase embedded in trailing prose.
-- Recommended correction: Accept only the final nonblank line, normalized according to one explicitly documented format, and require an exact match to one allowed verdict.
-- Proposed verification: Add fixtures for trailing prose, headings, bold text, multiple conclusion lines, CRLF input, and text after `NOT READY`; every malformed form must return `UNKNOWN`.
+- Affected behavior: BEH-B and BEH-C
+- Affected invariant: State belonging to another issue must not be resumed
+- Affected component: `scripts/lib/state.sh`, `scripts/from-issue.sh`, `scripts/change-workflow.sh`
+- Failure scenario: State contains `99:IMPLEMENT` while origin names `owner/repo	42`; invoking issue 42 strips `99:`, accepts the matching origin, and resumes the contradictory state.
+- Evidence: CHANGE_PLAN §1/§6 declares the state issue informational and never used for decisions; planned `state_issue` has no enforcement caller.
+- Why current tests may miss it: `seed-gate-prefixed-inflight-refuses` also supplies a foreign origin, so origin mismatch alone makes it pass; no case uses a mismatched prefix with a matching origin.
+- Recommended correction: Treat prefix/origin disagreement as corruption and refuse without mutation; keep origin authoritative but require redundant identities to agree.
+- Proposed verification: Cover prefix 99 plus origin 42 for both seeder and driver, asserting refusal, unchanged state, no stage execution, and no close.
 - Blocks implementation: Yes
 
-## AR-006: The non-TTY path contradicts the approved specification
+## AR-005: The headline model requirement remains unresolved and untested
 
 - Severity: High
-- Affected behavior: B-01 and B-02
-- Affected invariant: I-07
-- Affected component: `confirm_and_run_workflow`
-- Failure scenario: A scripted invocation with piped stdin silently seeds and exits 0 without prompting or running the workflow, despite the specification deliberately defining the new prompt as a compatibility break.
-- Evidence: CHANGE_SPEC §8 says non-interactive callers will hit the prompt and block; acceptance criterion 1 requires seed → prompt → run, while CHANGE_PLAN §10 and M-03 replace this with an immediate no-TTY decline.
-- Why current tests may miss it: M-03 asserts the plan’s divergent behavior rather than the specification’s acceptance criterion.
-- Recommended correction: Implement the approved behavior or revise and reapprove the specification before implementation; do not silently reinterpret lack of a TTY as human rejection.
-- Proposed verification: Exercise TTY, EOF, wrong-word, and piped-input cases against one approved behavior table with explicit output and exit-code expectations.
+- Affected behavior: BEH-A
+- Affected invariant: The implemented change must satisfy an approved model/CLI target
+- Affected component: Model defaults and agent command configuration
+- Failure scenario: B/C/D ship while every workflow continues using the current Sonnet/Opus and Claude defaults, delivering none of the requested Kimi cost reduction or “everything opus” behavior.
+- Evidence: CHANGE_REQUEST.md contradicts itself, CHANGE_SPEC §4 marks A unresolved, and CHANGE_PLAN explicitly excludes all model/default edits and tests.
+- Why current tests may miss it: Neither existing suite nor the proposed additions inspect resolved commands, models, flags, or wrapper compatibility.
+- Recommended correction: Obtain a human choice and compatibility contract before approving this plan, or split A into a separately blocked change and explicitly declare the present delivery partial.
+- Proposed verification: After resolution, stub the agent command and assert every stage’s exact executable, model, and flags under defaults and overrides.
 - Blocks implementation: Yes
 
-## AR-007: The close decision has no executable end-to-end test
+## AR-006: The plan substitutes refusal for an explicit reset request without approved evidence
 
 - Severity: High
-- Affected behavior: B-03 through B-07
-- Affected invariant: I-05, I-08, and I-09
-- Affected component: `close_issue_if_ready` and orchestration tests
-- Failure scenario: Argument order, run-ID parsing, status handling, auth fallback, or close gating is wrong while all classifier tests and `bash -n` checks still pass, allowing an unintended live close.
-- Evidence: CHANGE_PLAN §16 automates only the pure classifier; M-05 edits a reviewer-owned artifact and then reruns the stage that overwrites it without a `from-issue.sh` parent, while M-07 requires timing-dependent PATH/auth mutation during one long invocation.
-- Why current tests may miss it: None of the proposed automated tests executes the code path containing the irreversible `gh issue close` call.
-- Recommended correction: Add hermetic shell integration tests using temporary checkout state plus stubbed `gh` and workflow commands; reserve live GitHub verification for one disposable issue.
-- Proposed verification: Assert the complete command transcript and exit status for READY, NOT_READY, UNKNOWN, stale/mismatched ID, missing signal, driver failures, auth loss, close failure, decline, and `--new`.
+- Affected behavior: BEH-C
+- Affected invariant: Requirements may only be changed with explicit approval
+- Affected component: CHANGE_SPEC and `scripts/from-issue.sh`
+- Failure scenario: A user invokes a different issue expecting the requested automatic reset and continuation, but receives exit 1 and must manually mutate workflow state.
+- Evidence: CHANGE_REQUEST.md explicitly requests zeroing; CHANGE_SPEC rejects it, while BASELINE_REPORT’s cited `UPDATED_CHANGE_PLAN.md:53` discusses lock interleaving, not a deliberate prohibition on state reset, and its lock-versus-state distinction actually appears at `UPDATED_CHANGE_PLAN.md:164`.
+- Why current tests may miss it: Proposed tests assert the substituted refusal behavior rather than the requested observable outcome.
+- Recommended correction: Obtain explicit approval for refusal-plus-guidance; if reset is selected, define a lock-aware atomic reset of the complete coherent run state, not just the state file.
+- Proposed verification: Test the approved policy against live-lock, stale-lock, foreign-origin, unowned-state, approval, and partial-artifact cases.
 - Blocks implementation: Yes
 
-## AR-008: The prescribed `if !` pattern can erase the driver’s failure status
+## AR-007: The claimed single-writer guarantee excludes the other production driver
+
+- Severity: High
+- Affected behavior: BEH-B and BEH-D
+- Affected invariant: INV-2 and INV-3
+- Affected component: `scripts/change-workflow.sh`, `scripts/stagegate.sh`, shared `.workflow/state`, and `FINAL_AUDIT.md`
+- Failure scenario: `stagegate.sh`, which takes no lock, overwrites shared state or `FINAL_AUDIT.md` while change-workflow validates and closes; mutation before hashing suppresses closure, while mutation after hashing violates the audit-content check at close time.
+- Evidence: The change driver alone acquires `.workflow/lock` (`scripts/change-workflow.sh:598`), whereas `stagegate.sh:496-615` reads/writes the same state and audit artifact without consulting that lock.
+- Why current tests may miss it: All proposed tests are serial and no automated suite exercises `stagegate.sh`.
+- Recommended correction: Either make the lock cover every shared-artifact writer or separate the drivers’ state/artifact namespaces; do not claim the existing mutex makes `.workflow` single-writer.
+- Proposed verification: Pause change-workflow immediately before close, run stagegate through state and audit writes, then assert deterministic refusal and no close under either interleaving.
+- Blocks implementation: Yes
+
+## AR-008: The network call can hold the workflow mutex indefinitely
 
 - Severity: Medium
-- Affected behavior: B-06
-- Affected invariant: I-08
-- Affected component: `confirm_and_run_workflow`
-- Failure scenario: Generated code captures `$?` inside `if ! change-workflow.sh; then`; because `!` inverts the status, it records zero and reports success after a failed driver.
-- Evidence: Both scripts use `set -euo pipefail` at line 2, and CHANGE_PLAN §20 explicitly prescribes driver invocation via `if ! …; then` without specifying safe status capture.
-- Why current tests may miss it: No planned automated test makes the driver return a distinctive nonzero status and checks propagation.
-- Recommended correction: Capture status using `status=0; command || status=$?`, then branch on and return that stored value.
-- Proposed verification: Run against stubs returning 1, 7, and 130; assert no close attempt and exact status propagation.
+- Affected behavior: BEH-D
+- Affected invariant: Workflow progress and lock recovery remain bounded
+- Affected component: `scripts/change-workflow.sh` completion and `.workflow/lock`
+- Failure scenario: `gh issue close` hangs on network or credential I/O, leaving the process and checkout lock held indefinitely and blocking every subsequent change run.
+- Evidence: CHANGE_PLAN §11 says the call is “bounded by `gh`’s own timeout,” but specifies no timeout, deadline, or evidence for that guarantee.
+- Why current tests may miss it: Stubs return immediately; no test models a hung close or verifies cancellation and lock cleanup.
+- Recommended correction: Add an explicit portable deadline and durable retry behavior while retaining immutable inputs for the close decision.
+- Proposed verification: Use a blocking `gh` stub, assert bounded termination, no close marker, retryable status, and removal of `.workflow/lock`.
+- Blocks implementation: No
+
+## AR-009: Stagegate library wiring is unneeded production refactoring without regression coverage
+
+- Severity: Medium
+- Affected behavior: Existing new-application workflow
+- Affected invariant: Unrelated standalone workflow behavior remains unchanged
+- Affected component: `scripts/stagegate.sh` and `scripts/lib/state.sh`
+- Failure scenario: A parser, sourcing, packaging, or Bash-compatibility defect prevents the new-application driver from starting even though that driver has no issue identity and produces exactly the same bare state.
+- Evidence: CHANGE_PLAN §4 says stagegate’s prefix is empty in practice, §16 supplies no stagegate test, and §21 admits the edit is symmetry-only and can be cut.
+- Why current tests may miss it: The complete automated strategy runs only audit-verdict and close-flow suites; neither executes stagegate state transitions.
+- Recommended correction: Remove stagegate from this change unless an actual issue-binding requirement is defined; otherwise add a dedicated hermetic state-machine suite before sharing the parser.
+- Proposed verification: If retained, exercise every stagegate state, legacy bare-state resume, unknown state, missing library, invocation from another CWD, and Bash 3.2.
 - Blocks implementation: No
 
 - Blocking findings: AR-001, AR-002, AR-003, AR-004, AR-005, AR-006, and AR-007.
-- Regression risks: Wrong-issue closure, stale-audit closure, broken resumability, overwritten human edits, non-TTY behavior drift, and masked driver failures.
-- Recommended simplifications: Refuse auto-run when existing state lacks matching origin metadata, serialize runs, parse only an exact final verdict line, and defer live closing until the hermetic close-gating path passes.
-- Required test additions: Stale-state matrix, stale-output test, concurrent-run interleaving, pause/resume coverage, malformed-verdict fixtures, non-TTY contract checks, stubbed GitHub close integration, and nonzero-status propagation.
-- Overall assessment: NOT READY; the run ID does not establish that the verdict belongs to the current issue, and the plan can irreversibly close the wrong issue.
+- Regression risks: Wrong-issue closure, unauthenticated-path closure, unrecoverable close failures, contradictory state resumption, cross-driver artifact races, and new stagegate startup failures.
+- Recommended simplifications: Keep closing in an authenticated durable close-intent flow, separate it from generic `.workflow/origin`, reject prefix/origin disagreement, omit stagegate wiring, and split unresolved model policy from the state/close work.
+- Required test additions: Stale-origin direct run, matching-origin/mismatched-prefix, curl fetch with the real driver, close-failure retry, concurrent stagegate mutation, hung-`gh` cleanup, and resolved model-command assertions.
+- Overall assessment: Reject the plan pending revision; its new irreversible side effect lacks trustworthy standalone identity, durable recovery, authenticated-fetch provenance, and complete concurrency control.

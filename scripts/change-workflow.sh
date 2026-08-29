@@ -36,6 +36,7 @@ LEDGER_FILE="$STATE_DIR/cost.tsv"
 LOCK_DIR="$STATE_DIR/lock"
 ORIGIN_FILE="$STATE_DIR/origin"
 VERDICT_FILE="$STATE_DIR/audit-verdict"
+MARKER_FILE="$STATE_DIR/issue-closed"
 
 mkdir -p "$APPROVAL_DIR" "$LOG_DIR"
 
@@ -103,6 +104,11 @@ PARALLEL_CHECKLIST="${WORKFLOW_PARALLEL_CHECKLIST:-1}"
 AGENT_CMD="${WORKFLOW_AGENT_CMD:-claude}"
 REVIEWER_CMD="${WORKFLOW_REVIEWER_CMD:-codex}"
 
+# Close the originating GitHub issue on reaching COMPLETE with a READY verdict.
+# Set to 0 for an immediate, no-deploy kill switch: behavior reverts to closing
+# only from from-issue.sh's post-run check.
+CLOSE_ISSUE="${WORKFLOW_CLOSE_ISSUE:-1}"
+
 # `$AGENT_CMD -p` is non-interactive, so a normal permission prompt can never be
 # answered. Explicitly grant the tools needed by the analysis, writing, build,
 # and verification stages. This is an allowlist, not a permission bypass.
@@ -120,6 +126,10 @@ hash_file() {
 # self-relative so the driver still runs from any CWD.
 . "$ROOT/scripts/lib/audit-verdict.sh"
 
+# .workflow/state grammar, and the shared INV-3 close gate.
+. "$ROOT/scripts/lib/state.sh"
+. "$ROOT/scripts/lib/issue-close.sh"
+
 require_file() {
     if [[ ! -s "$1" ]]; then
         echo "Required file missing or empty: $1"
@@ -127,16 +137,22 @@ require_file() {
     fi
 }
 
+# The issue number written into .workflow/state is informational only;
+# .workflow/origin stays the sole identity source (INV-1).
+current_issue() {
+    if [[ -n "${STAGEGATE_ORIGIN_ISSUE:-}" ]]; then
+        printf '%s' "$STAGEGATE_ORIGIN_ISSUE"
+    else
+        origin_field "$ORIGIN_FILE" 2
+    fi
+}
+
 set_state() {
-    printf '%s\n' "$1" > "$STATE_FILE"
+    state_write "$STATE_FILE" "$1" "$(current_issue)"
 }
 
 get_state() {
-    if [[ -s "$STATE_FILE" ]]; then
-        cat "$STATE_FILE"
-    else
-        echo ANALYZE
-    fi
+    state_read "$STATE_FILE" ANALYZE
 }
 
 # --- Single-writer lock -----------------------------------------------------
@@ -193,6 +209,11 @@ origin_preflight() {
     local issue="${STAGEGATE_ORIGIN_ISSUE:-}"
     local state owner
 
+    # Corruption check first: a state file bound to one issue next to an origin
+    # naming another is not resolvable in either file's favour, and the check
+    # does not depend on this invocation being origin-bound.
+    state_origin_agree "$STATE_FILE" "$ORIGIN_FILE" || exit 1
+
     if [[ -z "$repo" || -z "$issue" ]]; then
         return 0
     fi
@@ -208,8 +229,9 @@ origin_preflight() {
         exit 1
     fi
 
-    owner="$(cat "$ORIGIN_FILE")"
-    if [[ "$owner" != "$(printf '%s\t%s' "$repo" "$issue")" ]]; then
+    owner="$(head -n 1 "$ORIGIN_FILE")"
+    if [[ "$(origin_field "$ORIGIN_FILE" 1)" != "$repo" \
+        || "$(origin_field "$ORIGIN_FILE" 2)" != "$issue" ]]; then
         echo "Refusing to resume: this checkout is mid-run (state '$state') for another issue."
         echo "  $ORIGIN_FILE owner: $owner"
         echo "  this invocation:    $(printf '%s\t%s' "$repo" "$issue")"
@@ -218,9 +240,65 @@ origin_preflight() {
 }
 
 write_origin() {
-    if [[ -n "${STAGEGATE_ORIGIN_REPO:-}" && -n "${STAGEGATE_ORIGIN_ISSUE:-}" ]]; then
-        printf '%s\t%s\n' "$STAGEGATE_ORIGIN_REPO" "$STAGEGATE_ORIGIN_ISSUE" > "$ORIGIN_FILE"
+    local repo="${STAGEGATE_ORIGIN_REPO:-}" issue="${STAGEGATE_ORIGIN_ISSUE:-}"
+    local fetch=""
+
+    if [[ -z "$repo" || -z "$issue" ]]; then
+        return 0
     fi
+
+    # The driver never fetches an issue, so it can never originate a `gh`
+    # provenance claim. It only carries forward the one from-issue.sh recorded
+    # for this same binding; anything else is left absent, which reads as
+    # `curl` and fails closed at the close gate.
+    if [[ "$(origin_field "$ORIGIN_FILE" 1)" == "$repo" \
+        && "$(origin_field "$ORIGIN_FILE" 2)" == "$issue" ]]; then
+        fetch="$(origin_field "$ORIGIN_FILE" 3)"
+    fi
+
+    if [[ -n "$fetch" ]]; then
+        printf '%s\t%s\t%s\n' "$repo" "$issue" "$fetch" > "$ORIGIN_FILE"
+    else
+        printf '%s\t%s\n' "$repo" "$issue" > "$ORIGIN_FILE"
+    fi
+}
+
+# --- Driver-side issue close (BEH-D) ----------------------------------------
+# Fires when this process produced the verdict record, or — on a rerun that
+# lands on COMPLETE with no close marker — when the record names this same
+# concrete run id. A recorded '-' is the unset-run-id sentinel: it must never
+# be read as matching an unset STAGEGATE_RUN_ID, so it never enables the retry.
+
+close_origin_issue_if_ready() {
+    local recorded owns=0
+
+    if [[ ! -s "$ORIGIN_FILE" || -e "$MARKER_FILE" ]]; then
+        return 0
+    fi
+
+    if [[ "$VERDICT_WRITTEN_THIS_RUN" == "1" ]]; then
+        owns=1
+    elif [[ -s "$VERDICT_FILE" ]]; then
+        recorded="$(head -n 1 "$VERDICT_FILE" | awk -F'\t' '{printf "%s", $1}')"
+        if [[ -n "$recorded" && "$recorded" != "-" \
+            && "$recorded" == "${STAGEGATE_RUN_ID:-}" ]]; then
+            owns=1
+        fi
+    fi
+
+    if [[ "$owns" != "1" ]]; then
+        return 0
+    fi
+
+    # A failed close never fails the run: the change itself completed, and the
+    # missing marker leaves a later rerun eligible to retry.
+    issue_close_if_ready \
+        "${STAGEGATE_RUN_ID:--}" \
+        "$(origin_field "$ORIGIN_FILE" 1)" \
+        "$(origin_field "$ORIGIN_FILE" 2)" \
+        "$VERDICT_FILE" "$ORIGIN_FILE" FINAL_AUDIT.md "$MARKER_FILE" \
+        "$CLOSE_ISSUE" "$ORIGIN_BOUND" "$owns" \
+        "$(origin_fetch_method "$ORIGIN_FILE")" || true
 }
 
 # stage, seconds, usd, input, output, cache_read, cache_write
@@ -598,6 +676,20 @@ echo "Track: $TRACK"
 acquire_lock
 origin_preflight
 
+# Whether this invocation can prove it owns .workflow/origin, rather than having
+# found a leftover one on disk. Computed once here, before this run performs any
+# state write, so a run that only *becomes* issue-bound mid-run cannot later
+# read as resumed.
+ORIGIN_BOUND=0
+if [[ -n "$(state_issue "$STATE_FILE")" ]]; then
+    ORIGIN_BOUND=1
+fi
+if [[ -n "${STAGEGATE_ORIGIN_REPO:-}" && -n "${STAGEGATE_ORIGIN_ISSUE:-}" ]]; then
+    ORIGIN_BOUND=1
+fi
+
+VERDICT_WRITTEN_THIS_RUN=0
+
 while true; do
     state="$(get_state)"
 
@@ -774,6 +866,7 @@ while true; do
                 "$(hash_file FINAL_AUDIT.md)" \
                 > "$VERDICT_FILE"
             echo "Audit verdict: $audit_class"
+            VERDICT_WRITTEN_THIS_RUN=1
 
             set_state COMPLETE
             ;;
@@ -795,6 +888,7 @@ while true; do
                 echo "  Total Claude spend: \$$(ledger_total)"
                 echo "  (Codex stages report tokens only; see the cache_w column.)"
             fi
+            close_origin_issue_if_ready
             exit 0
             ;;
 

@@ -88,20 +88,40 @@ Closing the issue additionally requires `gh`: if the issue was fetched over the
 `curl` fallback, or `gh` is missing or unauthenticated at close time, the close
 is skipped with a message and the run is still a success.
 
-After a confirmed run exits 0, the issue is closed only if all of these hold:
-`.workflow/audit-verdict` records this run's id, its verdict class is `READY` or
-`READY_WITH_NON_BLOCKING_ISSUES`, `.workflow/origin` still names this issue, and
-`FINAL_AUDIT.md` still hashes to the value recorded when it was classified. Any
-mismatch leaves the issue open and prints the reason. A driver exit code other
-than 0 is propagated and no close is attempted.
+The issue is closed only if all of these hold: `.workflow/audit-verdict` records
+this run's id, its verdict class is `READY` or `READY_WITH_NON_BLOCKING_ISSUES`,
+`.workflow/origin` still names this issue, and `FINAL_AUDIT.md` still hashes to
+the value recorded when it was classified. Any mismatch leaves the issue open
+and prints the reason. A driver exit code other than 0 is propagated and no
+close is attempted.
+
+`change-workflow.sh` now performs that same close itself on reaching `COMPLETE`,
+so a run started or resumed directly — without going back through
+`from-issue.sh` — still closes its issue. The decision lives in one place,
+`scripts/lib/issue-close.sh`, and both entry points call it. The driver's close
+additionally requires that the run can prove which issue it owns: either
+`.workflow/state` already carried an issue prefix when the run started, or
+`STAGEGATE_ORIGIN_REPO`/`STAGEGATE_ORIGIN_ISSUE` were set for that invocation.
+A leftover `.workflow/origin` found on disk by an otherwise fresh run is not
+enough. `WORKFLOW_CLOSE_ISSUE=0` disables the driver-side close entirely. After
+a successful close the driver writes `.workflow/issue-closed`, and
+`from-issue.sh`'s own post-run check — now a defensive fallback rather than the
+only path — sees that marker and does not close a second time. A close that
+fails leaves no marker, so a later rerun of the same run id may retry it.
 
 State files this contract depends on, all under the gitignored `.workflow/`:
 
 | File | Written by | Meaning |
 |---|---|---|
-| `origin` | `from-issue.sh` on confirmation; `change-workflow.sh` in `ANALYZE` | `<owner/repo>TAB<issue>` that owns this checkout's in-flight run |
+| `origin` | `from-issue.sh` on confirmation; `change-workflow.sh` in `ANALYZE` | `<owner/repo>TAB<issue>[TAB<gh\|curl>]` that owns this checkout's in-flight run. The third field records how the issue was fetched; only `gh` may authorize a close, and a two-field file written before this field existed reads as `curl` |
 | `audit-verdict` | `change-workflow.sh` in `FINAL_AUDIT` | `<run-id>TAB<class>TAB<sha256 of FINAL_AUDIT.md>` |
+| `issue-closed` | `change-workflow.sh` after a successful close | `<run-id>TAB<owner/repo>TAB<issue>`; absence means no driver-side close happened |
+| `state` | either driver on every transition | `<STAGE>`, or `<issue>:<STAGE>` when the issue is known. The prefix is informational; a bare token stays valid |
 | `lock/pid` | `change-workflow.sh` for the length of a run | pid of the run holding the checkout |
+
+A state file whose issue prefix disagrees with `.workflow/origin`'s issue is
+treated as corruption by both the driver's preflight and `from-issue.sh`'s seed
+gate: they refuse and exit 1 rather than resolve it in either file's favour.
 
 `from-issue.sh --change` refuses to seed when `.workflow/state` shows an
 in-flight run whose `.workflow/origin` names a different issue, or names nothing
@@ -109,7 +129,8 @@ at all. When the origin matches the issue being seeded, `CHANGE_REQUEST.md` is
 left as it is — hand edits survive a resume — and only the prompt is repeated.
 `change-workflow.sh` performs the mirror-image check when launched by
 `from-issue.sh`, and refuses to start at all while another run holds
-`.workflow/lock`.
+`.workflow/lock`. The refusal names the exact command that clears the state
+deliberately; neither script ever clears it automatically.
 
 ### `codex-review-plan.sh` — adversarial plan review (Stage 2)
 

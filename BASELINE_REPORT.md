@@ -1,226 +1,272 @@
 # Baseline Report
 
-Omitted sections: none.
+Omitted sections: none
 
 ## 1. Change-request summary
 
-See `CHANGE_REQUEST.md` (seeded from unclehq/stagegate#2). Two asks: (a)
-`from-issue.sh` should trigger the change workflow automatically instead of
-just printing the command to run it; (b) once that workflow finishes, the
-seeding issue should be closed. All other `CHANGE_REQUEST.md` sections
-(Change Type, Observed/Desired Behavior, Reproduction, Constraints, Known
-Files, Out of Scope, Success Criteria) are still unfilled template text — see
-§15.
+`CHANGE_REQUEST.md` (seeded from `unclehq/stagegate#3`) bundles four
+independent asks in its Motivation, plus a Summary that contradicts the first:
+
+- **Summary**: "change everything to use opus."
+- **Motivation item A**: "change all scripts to use kimi in the place of
+  claude sonnet and claude opus" — directly contradicts the Summary.
+- **Motivation item B**: prepend the issue number to `.workflow/state`.
+- **Motivation item C**: `from-issue.sh` should zero `.workflow/state` when
+  its embedded issue number differs from the current invocation, so
+  `change-workflow.sh` "will complete properly."
+- **Motivation item D**: close the originating GitHub issue when
+  `change-workflow.sh` completes.
+- **Motivation item E**: remove `.workflow/lock/lock` when
+  `change-workflow.sh` completes.
+
+Change Type is unchecked and Observed/Desired Behavior, Reproduction,
+Constraints, Known Relevant Files, Out of Scope, and Success Criteria are all
+unfilled template boilerplate (`from-issue.sh` only substitutes Summary and
+Motivation from the issue; see §6). None of that narrows scope.
 
 ## 2. Repository architecture
 
-Six standalone, mutually-independent bash 3.2 scripts in `scripts/`, each
-resolving its own root and `cd`-ing there (`ROOT="$(cd "$(dirname
-"${BASH_SOURCE[0]}")/.." && pwd)"`):
+Stagegate is a set of bash drivers, no compiled artifact. Two resumable
+state-machine drivers share one lock/approval/logging convention:
 
-| Script | Role |
-|---|---|
-| `stagegate.sh` | new-application state-machine driver (reads `REQUIREMENTS.md`) |
-| `change-workflow.sh` | existing-code change state-machine driver (reads `CHANGE_REQUEST.md`) |
-| `workflow.sh` | manual approval/status helper |
-| `from-issue.sh` | seeds `CHANGE_REQUEST.md` or `REQUIREMENTS.md` from a GitHub issue |
-| `codex-review-plan.sh` | standalone re-run of the adversarial-review stage |
-| `codex-create-checklist.sh` | standalone re-run of the manual-checklist stage |
-
-`prompts/change/*.md` and `prompts/*.md` hold the per-stage agent prompts;
-`.workflow/` (gitignored) holds runtime state: `state`, `approvals/*.sha256`,
-`logs/`, `cost.tsv`, `change.diff`. No test framework, no CI (`.github/`
-does not exist), no linter config.
+- `scripts/stagegate.sh` — new-application pipeline, driven by
+  `REQUIREMENTS.md`. No origin binding, no lock, no issue-close.
+- `scripts/change-workflow.sh` — change-request pipeline, driven by
+  `CHANGE_REQUEST.md`. Has origin binding, a single-writer lock, and a cost
+  ledger.
+- `scripts/from-issue.sh` — seeds either driver from a GitHub issue; for
+  `--change` it also confirms with the human, invokes `change-workflow.sh`,
+  and conditionally closes the issue afterward.
+- `scripts/lib/audit-verdict.sh` — pure verdict classifier shared by the
+  driver and `from-issue.sh`.
+- `scripts/workflow.sh` — manual per-gate helper, predates the unified
+  drivers, reads/writes the same `.workflow/` files by hand.
+- `scripts/tests/close-flow-test.sh`, `scripts/tests/audit-verdict-test.sh` —
+  hermetic bash test suites (no real `claude`/`codex`/`gh` calls; reviewer and
+  agent CLIs are stubbed).
 
 ## 3. Relevant code paths
 
-| Path | Relevance |
+| Area | File:lines |
 |---|---|
-| `scripts/from-issue.sh:131-152` | mode auto-detection (`--change` vs `--new`) |
-| `scripts/from-issue.sh:158-208` | `write_change_request` — writes `CHANGE_REQUEST.md`, prints suggested next command, returns |
-| `scripts/from-issue.sh:210-298` | `write_new_project_brief` — same shape for the new-app path |
-| `scripts/from-issue.sh:300-303` | dispatch, then script exits |
-| `scripts/change-workflow.sh:181-233` | `human_gate` — the interactive approval primitive |
-| `scripts/change-workflow.sh:507-698` | the state machine itself, `ANALYZE` → `COMPLETE` |
-| `scripts/change-workflow.sh:663-690` | `FINAL_AUDIT` and `COMPLETE` states — where a "done" signal would be read/emitted |
-| `prompts/change/final-audit.md:56-58` | defines the `READY` / `READY WITH NON-BLOCKING ISSUES` / `NOT READY` verdict vocabulary |
-| `README.md:114-133` | documented "Start from a GitHub issue" flow |
-| `README.md:99-113` | documented manual change-request flow (fill in `CHANGE_REQUEST.md` *then* run the driver) |
-| `scripts/README.md:63-82,115-129` | `from-issue.sh` CLI/exit-code contract |
+| Model/effort/CLI defaults (change-workflow) | `scripts/change-workflow.sh:57-63,103-104` |
+| Model/effort/CLI defaults (stagegate) | `scripts/stagegate.sh:45-52,56-95` |
+| State read/write (change-workflow) | `scripts/change-workflow.sh:33,130-140,801-804` |
+| State read/write (stagegate) | `scripts/stagegate.sh:33,128-133` |
+| State read (from-issue) | `scripts/from-issue.sh:17,22-26,39-73` |
+| Origin binding | `scripts/change-workflow.sh:37,185-224`; `scripts/from-issue.sh:18,28-73,112` |
+| Lock acquire/release | `scripts/change-workflow.sh:36,142-183,598` |
+| Audit verdict record | `scripts/change-workflow.sh:38,760-778`; `scripts/lib/audit-verdict.sh` |
+| Issue-close chain | `scripts/from-issue.sh:75-127,129-211` |
+| Test fixtures asserting state/origin format | `scripts/tests/close-flow-test.sh:327-462` |
+| Documented contract | `README.md:114-157,233-283`; `scripts/README.md:106` |
 
 ## 4. Current observable behavior
 
-`from-issue.sh <issue> [--change|--new]` fetches issue metadata (via `gh
-issue view`, falling back to `curl` GET for public repos), writes
-`CHANGE_REQUEST.md` or the `REQUIREMENTS.md` project-brief section, prints a
-"Run: ..." hint, and exits — it never invokes `change-workflow.sh` or
-`stagegate.sh` itself (verified: it contains no call to either script or to
-`exec`/`system`-style invocation). It never touches the GitHub issue beyond
-the initial read; there is no `gh issue close`/`gh issue comment` anywhere in
-the repository (only match for "gh issue" is the read at
-`from-issue.sh:86`).
-
-`change-workflow.sh`'s `COMPLETE` state (lines 672-690) prints file names to
-review and the cost ledger, then unconditionally `exit 0`s — it does not
-parse `FINAL_AUDIT.md` for its `READY`/`NOT READY` verdict; that verdict is
-free text written by the reviewer CLI for a human to read.
+| ID | Trigger | Current result | Evidence | Must preserve? |
+|---|---|---|---|---|
+| B-1 | `change-workflow.sh` run with no `WORKFLOW_MODEL_*` overrides | BASELINE/CHANGE_SPEC/UPDATED_PLAN/EXECUTE stages use `sonnet`; CHANGE_PLAN/IMPLEMENT/SMALL use `opus` | `scripts/change-workflow.sh:57-63` | Only if CHANGE_SPEC keeps per-stage tiering; contradicts CR Summary ("everything opus") and CR Motivation-A ("everything kimi") |
+| B-2 | `stagegate.sh` run with no overrides | All stages default `opus` except `requirements`/`execute-checklist` (`sonnet`) | `scripts/stagegate.sh:56,82-86` | Same tension as B-1 |
+| B-3 | Either driver run with no `WORKFLOW_AGENT_CMD`/`WORKFLOW_REVIEWER_CMD` | Agent CLI is `claude`, reviewer CLI is `codex` | `scripts/change-workflow.sh:103-104`; `scripts/stagegate.sh:51-52` | Swapping is already a supported extension point — README's own example sets `WORKFLOW_AGENT_CMD=kimi` (`README.md:254`) — provided the substitute CLI accepts the same flags (`README.md:258-260`) |
+| B-4 | Any stage transition | `.workflow/state` is overwritten with one bare token, e.g. `ANALYZE`, `IMPLEMENT`, `COMPLETE` — no issue number, no delimiter | `scripts/change-workflow.sh:130-132`; `scripts/stagegate.sh:128-131` | Format is read verbatim by `from-issue.sh:23-24`, `scripts/workflow.sh`, and asserted verbatim by `scripts/tests/close-flow-test.sh:399,444` and `QUICK_START.md:92` |
+| B-5 | `from-issue.sh --change` invoked while `.workflow/state` is non-empty/non-`COMPLETE` and `.workflow/origin` names a **different** (repo, issue) | Refuses to seed, exits 1, prints the conflicting owner; `CHANGE_REQUEST.md` and `.workflow/state` are left untouched | `scripts/from-issue.sh:47-67`; verified live in `VERIFICATION_REPORT.md:29` (MC-010) | This already satisfies the safety goal behind CR Motivation-C, by refusing rather than by zeroing state — see §15 |
+| B-6 | `change-workflow.sh` invoked directly (not via `from-issue.sh`) with `STAGEGATE_ORIGIN_REPO`/`ISSUE` set, state non-empty/non-`COMPLETE`, and `.workflow/origin` missing or naming a different issue | Refuses to proceed, no state mutation, no stage runs | `scripts/change-workflow.sh:191-218` | Mirror-image guard to B-5, driver side |
+| B-7 | `change-workflow.sh` reaches `FINAL_AUDIT` and the reviewer produces a verdict | `.workflow/audit-verdict` gets `run_id\tVERDICT\tsha256(FINAL_AUDIT.md)`; state advances to `COMPLETE` | `scripts/change-workflow.sh:770-778` | change-workflow.sh itself never calls `gh` — closing is entirely `from-issue.sh`'s job (B-9) |
+| B-8 | `change-workflow.sh` process exits, any path (success, error, or a signal `trap` catches) | `.workflow/lock/` (the whole directory, including `pid`) is removed by `release_lock` via the `EXIT` trap registered at first successful `mkdir` | `scripts/change-workflow.sh:149-154,162` | This already satisfies CR Motivation-E for every exit path the driver controls (not e.g. `kill -9`) |
+| B-9 | `from-issue.sh --change` runs `change-workflow.sh` to exit 0, then checks `.workflow/audit-verdict` against `run_id`, `.workflow/origin` against the current issue, and a fresh hash of `FINAL_AUDIT.md` | Closes the GitHub issue via `gh issue close --comment ...` only if every check agrees and the verdict is `READY`/`READY_WITH_NON_BLOCKING_ISSUES`; otherwise leaves it open with a printed reason | `scripts/from-issue.sh:126,132-211` | This already satisfies CR Motivation-D, but **only for runs launched by `from-issue.sh`** — a `change-workflow.sh` run started by a human directly, or resumed in a later shell without going back through `from-issue.sh`, never reaches this code and never closes anything even on a READY audit |
 
 ## 5. Existing invariants
 
 | ID | Invariant | Current enforcement | Existing test | Confidence |
 |---|---|---|---|---|
-| I-01 | Every stage transition requiring approval blocks on an interactive, exact-word human response; nothing bypasses it | `human_gate()`, `change-workflow.sh:181-233` | none automated (CLAUDE.md rule 1 / "Never bypass a human review gate") | High |
-| I-02 | An approved artifact is SHA-256 pinned; a post-approval edit halts the pipeline | `verify_approval()`, `change-workflow.sh:155-174` | none automated; documented in `README.md:182-200` | High |
-| I-03 | Reviewer-owned files (`ADVERSARIAL_REVIEW.md`, `MANUAL_CHECKLIST.md`, `FINAL_AUDIT.md`) are written only via `run_codex`/`start_codex_bg` | state-machine call sites in `change-workflow.sh` | none automated (structural read) | High |
-| I-04 | Every script is runnable from any CWD via self-relative root resolution | `ROOT=...; cd "$ROOT"` at the top of each script | none automated; manually spot-checked in prior cycle | High |
-| I-05 | `from-issue.sh` never mutates GitHub state — fetch is read-only (`gh issue view` / `curl GET`) | `from-issue.sh:85-92`, no write call anywhere in the file | none automated | High |
-| I-06 | `change-workflow.sh` `COMPLETE` always exits 0, independent of the audit verdict text | `change-workflow.sh:672-690` | none automated | High |
-| I-07 | The documented change-request flow gives a human an editing window on `CHANGE_REQUEST.md` before the driver runs (`README.md` step 2 precedes step 4) | procedural (docs), not code-enforced | none | Medium |
-
-I-05 is the invariant this change request asks to relax (add a GitHub write).
-I-07 is the invariant potentially at risk from "run the change workflow
-automatically" — see §16.
+| I-1 | A resumed run may not act on `.workflow/state` unless `.workflow/origin` proves it belongs to the current (repo, issue) | `scripts/change-workflow.sh:191-218` (driver) + `scripts/from-issue.sh:47-67` (seed gate) | `close-flow-test.sh` cases `preflight-origin-mismatch`, `preflight-origin-absent`, MC-010 in `VERIFICATION_REPORT.md:29` | High |
+| I-2 | Only one `change-workflow.sh` may hold a given checkout at a time | `mkdir`-based lock, `scripts/change-workflow.sh:147-183` | `close-flow-test.sh` cases `lock-held-by-live-pid`, `lock-stale-pid-cleared` | High |
+| I-3 | The GitHub issue is closed only when the verdict record's run id, origin binding, and `FINAL_AUDIT.md` hash all match the current run | `scripts/from-issue.sh:132-211` | Multiple `close-flow-test.sh` cases incl. `verdict-record-written` | High |
+| I-4 | An approved artifact whose bytes change is re-hashed and rejected (gate must be re-approved) | `scripts/change-workflow.sh` `verify_approval` (~line 246+) | Not exercised by the two automated suites read in this pass | Medium (asserted by design, not observed running here) |
+| I-5 | `.workflow/state` is never auto-deleted to resolve a foreign-owner conflict; the design explicitly rejected that as unsafe | `UPDATED_CHANGE_PLAN.md:53` ("this is not core-rule-13 state deletion... belt-and-suspenders, not a substitute for the lock") | N/A (design record, not code) | High — directly contradicts CR Motivation-C, see §15 |
 
 ## 6. Current API, schema, and interface contracts
 
-`from-issue.sh` CLI contract (per `scripts/README.md:63-82,115-129`):
-positional `<issue-number|github-url>`, optional `--change`/`--new`; usage is
-printed to **stdout** in every case. No args or `-h`/`--help` → usage, exit
-0; unrecognized issue arg or unknown flag → usage, exit 1. Verified live
-(see §8/§9).
-
-`change-workflow.sh` CLI contract: no positional arguments; `-h`/`--help` →
-usage to stdout, exit 0; `--version` → `0.1.0`, exit 0; unknown argument →
-usage to **stderr**, exit 1. All configuration via `WORKFLOW_*` env vars
-(full table in top-level `README.md` "Configuration"; not restated here).
-State persists in `.workflow/state` as a single bare state-name string,
-defaulting to `ANALYZE` when absent/empty (`get_state()`,
-`change-workflow.sh:127-133`).
+- `.workflow/state`: single line, one bare token from `{ANALYZE, PLAN,
+  UPDATED_PLAN, IMPLEMENT, CHECKLIST, EXECUTE_CHECKLIST, FINAL_AUDIT,
+  COMPLETE}` (change-workflow) or the stagegate equivalent set. No delimiter,
+  no issue number. Consumers: `scripts/change-workflow.sh`,
+  `scripts/stagegate.sh`, `scripts/from-issue.sh`, `scripts/workflow.sh`,
+  `README.md:157,273,282`, `QUICK_START.md:92`, and literal-value assertions
+  in `scripts/tests/close-flow-test.sh:399,444`.
+- `.workflow/origin`: single line, `OWNER/REPO\tISSUE_NUM`. Written by
+  `from-issue.sh:112` and read by both drivers' preflight and
+  `close_issue_if_ready`.
+- `.workflow/audit-verdict`: single line,
+  `run_id\tVERDICT_CLASS\tsha256(FINAL_AUDIT.md)`. Written
+  `scripts/change-workflow.sh:770-775`, read `scripts/from-issue.sh:142-145`.
+- `.workflow/lock/`: directory; `mkdir` is the mutex; contains `pid` only.
+  Presence of the directory is the lock, not any specific file inside it.
+- Env var contract (both drivers): `WORKFLOW_AGENT_CMD`, `WORKFLOW_REVIEWER_CMD`,
+  `WORKFLOW_MODEL_<STAGE>`, `WORKFLOW_EFFORT_<STAGE>`, `WORKFLOW_TURNS_<STAGE>`,
+  `WORKFLOW_TOOLS_<STAGE>`, `CODEX_MODEL`; change-workflow.sh adds
+  `WORKFLOW_TRACK`, `WORKFLOW_BUDGET_<STAGE>`, `WORKFLOW_SESSION_REUSE`,
+  `WORKFLOW_PARALLEL_CHECKLIST`; from-issue.sh chaining adds
+  `STAGEGATE_RUN_ID`, `STAGEGATE_ORIGIN_REPO`, `STAGEGATE_ORIGIN_ISSUE`
+  (documented `README.md:233-264`).
+- `CHANGE_REQUEST.md` template: fixed section headings written by
+  `from-issue.sh`'s `write_change_request` (heredoc around line 380+); only
+  Summary and Motivation are populated from the issue, everything else stays
+  boilerplate.
 
 ## 7. Existing automated-test coverage
 
-None (no test framework, no CI). The prior change cycle (issue #1,
-`CHANGE_TEST_REPORT.md`) validated purely via `bash -n` syntax checks on all
-six scripts and manual invocation of the argument-handling paths
-(help/version/unknown-arg) for each script; `shellcheck` was not installed
-and is not a repo dependency.
+| Suite | Scope | Checks |
+|---|---|---|
+| `scripts/tests/close-flow-test.sh` | Lock, origin binding, seed gate, verdict recording, issue-close decision matrix, end-to-end hermetic driver runs with stubbed `claude`/`codex`/`gh` | 99 |
+| `scripts/tests/audit-verdict-test.sh` | `scripts/lib/audit-verdict.sh` verdict classification | 26 |
+
+No test covers model/effort defaults, `WORKFLOW_AGENT_CMD` swapping, or any
+issue-number-in-state format — all four are new surface for this change.
 
 ## 8. Exact build and test commands executed
 
 ```
-for f in scripts/*.sh; do bash -n "$f"; done      # exit 0 for all 6
-command -v gh curl jq shellcheck                  # gh, curl, jq present; shellcheck absent
-./scripts/from-issue.sh                           # usage to stdout, exit 0
-./scripts/from-issue.sh --help                    # usage to stdout, exit 0
-./scripts/from-issue.sh abc                       # "Unrecognized issue argument: abc" + usage to stdout, exit 1
-./scripts/change-workflow.sh --help               # usage to stdout, exit 0
-./scripts/change-workflow.sh --version            # "0.1.0", exit 0
-gh auth status                                     # logged in as brianosaurus, token scope includes `repo`
-gh api repos/unclehq/stagegate/issues/2 --jq '.state,.title'   # "open", "help and close issues"
-git remote -v                                      # origin -> git@github.com:unclehq/stagegate.git
+bash scripts/tests/audit-verdict-test.sh
+bash scripts/tests/close-flow-test.sh
 ```
+No build step exists (bash scripts, no compilation).
 
 ## 9. Baseline test results
 
-All commands above passed / behaved exactly as documented in
-`scripts/README.md`. No regressions or surprises versus documented behavior.
-Confirmed live against the real remote: issue unclehq/stagegate#2 exists,
-is open, and its title matches `CHANGE_REQUEST.md`'s Summary line; the local
-`gh` session is authenticated with a token that has the `repo` scope
-(sufficient to close issues).
+First run, in this session's ambient shell:
+
+```
+audit-verdict-test.sh: 26 checks passed
+close-flow-test.sh: 4 of 99 checks failed
+  FAIL [stale-audit-rejected] expected output to contain: Required file missing or empty: FINAL_AUDIT.md
+  FAIL [verdict-record-written] expected exit 0, got 1
+  FAIL [verdict-record-written] expected output to contain: Audit verdict: READY
+  FAIL [verdict-record-written] verdict record mismatch: (empty)
+```
+
+Re-run after `unset STAGEGATE_ORIGIN_REPO STAGEGATE_ORIGIN_ISSUE
+STAGEGATE_RUN_ID`:
+
+```
+close-flow-test.sh: 99 checks passed
+audit-verdict-test.sh: 26 checks passed
+```
+
+True baseline (clean environment) is **125/125 passing**. See §10 for why the
+first run failed.
 
 ## 10. Existing failures, warnings, and flaky behavior
 
-None observed. `shellcheck` absence is pre-existing and unchanged from the
-prior cycle. No CI pipeline exists to fail.
+The 4 failures above are an environment artifact, not a code defect: this
+session's shell is itself a subprocess of a live `change-workflow.sh` ANALYZE
+stage (launched by `from-issue.sh` for `unclehq/stagegate#3`), so
+`STAGEGATE_ORIGIN_REPO=unclehq/stagegate`, `STAGEGATE_ORIGIN_ISSUE=3`, and
+`STAGEGATE_RUN_ID` are exported ambient env vars. The two failing test cases
+(`stale-audit-rejected`, `verdict-record-written`, `close-flow-test.sh:435,462`)
+pre-set `.workflow/state=FINAL_AUDIT` without an `.workflow/origin`, expecting
+no origin check to fire — but `run_driver` (`close-flow-test.sh:174`) does not
+sanitize `STAGEGATE_ORIGIN_*`/`STAGEGATE_RUN_ID` out of the ambient
+environment, so the inherited vars trigger the real origin-mismatch refusal
+(I-1) instead. **Anyone running this test suite from inside an active
+stagegate session, or any CI job that leaks these three var names, will see
+the same spurious failures.** This is a latent test-isolation gap worth
+flagging to the reviewer, independent of the requested change.
 
-## 11. Reproduction result for the reported bug, if applicable
+## 11. Reproduction result for the reported bug
 
-Not applicable — this is a feature request, not a bug. Note:
-`CHANGE_REQUEST.md`'s "Change Type" line itself is still the unselected
-template (`Feature | Bug Fix | Prototype | ...`); classified here as Feature
-based on the Motivation wording.
+Not applicable in the bug-repro sense — this is a bundle of feature/config
+asks, not a single reported defect. Per-item status, established by reading
+code plus the passing `close-flow-test.sh` suite (no bug reproduced live
+against a real GitHub issue, to avoid side effects on `unclehq/stagegate#3`):
+
+- Kimi/opus model change: not implemented (B-1, B-2).
+- Issue number in `.workflow/state`: not implemented (B-4).
+- Zero state on issue mismatch: not implemented; a different mechanism
+  (refuse, not zero) already exists and covers the underlying safety concern
+  (B-5, B-6, I-1, I-5).
+- Close issue on completion: implemented, but only on the `from-issue.sh`
+  chained path (B-9).
+- Remove lock dir on completion: implemented for every exit path the driver
+  controls (B-8).
 
 ## 12. Likely change surface
 
-- `scripts/from-issue.sh` — invoke `./scripts/change-workflow.sh` (and/or
-  `./scripts/stagegate.sh`, scope-dependent, see §15) after writing the seed
-  file; add issue-close logic keyed to that run's outcome.
-- `scripts/change-workflow.sh` — possibly needs to expose a machine-readable
-  completion signal (exit code and/or the `FINAL_AUDIT.md` verdict) if
-  `from-issue.sh` is what performs the close, since today `COMPLETE` gives no
-  such signal (I-06).
-- `scripts/README.md`, top-level `README.md` — flow documentation ("Start
-  from a GitHub issue" section currently describes a two-step manual
-  handoff that this change collapses).
+`scripts/change-workflow.sh`, `scripts/stagegate.sh` (model/CLI defaults,
+state format), `scripts/from-issue.sh` (state-mismatch handling, issue-number
+parsing), `scripts/workflow.sh` (reads state manually), `README.md` +
+`scripts/README.md` + `QUICK_START.md` (documented format/defaults),
+`scripts/tests/close-flow-test.sh` (state-format literals at
+`327-462`), possibly `scripts/lib/`.
 
 ## 13. Regression-sensitive components
 
-- `from-issue.sh` mode-resolution and file-writing logic
-  (`write_change_request`, `write_new_project_brief`) — must keep working
-  standalone/non-auto-run for users who still want to review before running
-  the driver (see I-07 tension in §16).
-- The six-script argument-handling contract in `scripts/README.md:115-129`
-  (help/version/unknown-arg exit codes and stdout-vs-stderr routing) — easy
-  to break by adding new flags carelessly.
-- `change-workflow.sh`'s human-gate/approval-hash flow (I-01, I-02) — must
-  not be weakened or bypassed by the new automatic invocation.
+- Origin/lock/state machine (I-1, I-2, I-5) — the exact mechanism the prior
+  change cycle (issue #2, see `UPDATED_CHANGE_PLAN.md`) built to close AR-001
+  ("stale state closes wrong issue"). Any change to `.workflow/state`'s format
+  or to the zero-on-mismatch semantics interacts directly with this and must
+  not reopen AR-001.
+- `close-flow-test.sh`'s 99 literal-state assertions — a state-format change
+  breaks every `printf 'IMPLEMENT\n' > .../state` fixture unless updated in
+  lockstep.
+- Cost ledger (`scripts/change-workflow.sh:226-232`) — assumes stage names
+  and per-stage model are independent columns; not schema-coupled to model
+  values, low risk.
+- `README.md`'s documented defaults table (`README.md:233-264`) and
+  `scripts/README.md` — both will drift if model/env-var defaults change
+  without a doc update.
 
 ## 14. Areas explicitly outside the change
 
-`stagegate.sh` internals, `codex-review-plan.sh`, `codex-create-checklist.sh`,
-`workflow.sh`, and prompt file contents under `prompts/` are not implicated
-by the request text and are assumed out of scope pending CHANGE_SPEC
-confirmation.
+`stagegate.sh`'s new-application pipeline behavior beyond shared model/CLI
+defaults, `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `GOOD_FIRST_ISSUES.md`,
+`STRATEGY.md`, `AGENTIC.md`, the `prompts/` stage prompt bodies (no requested
+change touches prompt content).
 
 ## 15. Unknowns and assumptions
 
-- `CHANGE_REQUEST.md` leaves Change Type, Observed/Desired Behavior,
-  Reproduction, Constraints, Known Relevant Files, Out of Scope, and Success
-  Criteria as unfilled template text. The change surface above is inferred
-  solely from Summary + Motivation.
-- Unclear whether "run the change workflow automatically" also covers the
-  `--new` path (auto-running `stagegate.sh`), or only `--change`
-  (`change-workflow.sh`). Motivation text says "change workflow" and "close
-  issue... completes change-request" specifically — read as `--change`-only
-  unless CHANGE_SPEC says otherwise.
-- Unclear which run outcome should trigger a close: `COMPLETE` is reached
-  regardless of whether `FINAL_AUDIT.md` says `READY`, `READY WITH
-  NON-BLOCKING ISSUES`, or `NOT READY` (I-06). Closing on any `COMPLETE`
-  could close an issue whose change was judged `NOT READY`.
-- No file in the repo currently persists which issue (owner/repo/number)
-  seeded a given `CHANGE_REQUEST.md` in a machine-readable way — only a
-  Markdown link in the file's header (`from-issue.sh:162`). If the close
-  step runs in a process separate from `from-issue.sh` (e.g., triggered from
-  inside `change-workflow.sh`'s `COMPLETE` state), that identity has to be
-  parsed back out or persisted to a new state file.
-- Unclear whether closing should also leave a comment (e.g., linking
-  `.workflow/change.diff` or the audit verdict) or close silently.
-- The `curl`-only fallback path (unauthenticated, public repos) documented
-  in `from-issue.sh` cannot close issues; behavior when only `curl` is
-  available and a close is requested is undefined by the request.
+- **Summary vs. Motivation contradict each other** ("everything opus" vs.
+  "everything kimi"). CHANGE_SPEC must resolve this with the human before any
+  model-default edit; assuming one over the other is a guess.
+- **"Kimi" is not a drop-in value.** The CLI swap point already exists
+  (`WORKFLOW_AGENT_CMD`/`WORKFLOW_REVIEWER_CMD`), but README documents it
+  works only if "the swapped CLI must accept the same flags the driver
+  passes... [otherwise] provide a wrapper script" (`README.md:258-260`). Test
+  passage for it hasn't been checked and no `kimi` binary is available here.
+  Whether "change all scripts to use kimi" means (a) changing the default env
+  var value, (b) writing a flag-translating wrapper, or (c) something else is
+  unresolved.
+- **Motivation-C directly conflicts with an existing, deliberate design
+  decision (I-5).** The prior change cycle explicitly chose "refuse" over
+  "auto-reset" for foreign/stale state, reasoning that silent state deletion
+  could discard another in-flight run's progress (`UPDATED_CHANGE_PLAN.md:53`,
+  core rule 13: "do not overwrite unrelated uncommitted work"). Implementing
+  Motivation-C literally (zero `.workflow/state` on mismatch) would reintroduce
+  the class of bug AR-001 was written to close, unless scoped very carefully
+  (e.g., only zero when no lock is held and no unresolved approvals exist).
+  This needs explicit human sign-off before CHANGE_SPEC commits to it.
+- **Whether "prepend issue number to state" changes the file format for all
+  consumers, or adds a parallel/derived value.** A literal prepend (e.g.
+  `3:ANALYZE`) breaks every exact-match consumer in §6/§13 unless they are all
+  updated together; an additive approach (e.g. keep `.workflow/origin` as the
+  source of truth, only cosmetically show the issue number) would be lower
+  risk but may not satisfy the literal request.
+- Whether "remove `.workflow/lock/lock`" refers to the existing `.workflow/lock/`
+  directory (already removed on every driver-controlled exit, B-8) or names
+  some other path not currently present in the repo — no file literally named
+  `lock` inside `.workflow/lock/` exists today (only `pid`).
+- No stated acceptance criteria, constraints, or out-of-scope list in
+  `CHANGE_REQUEST.md` itself (§1) — all follow-on stages are working from the
+  Motivation prose alone.
 
 ## 16. Initial risk assessment
 
-- **Approval-gate tension (I-07):** the documented flow puts a human editing
-  window between seeding `CHANGE_REQUEST.md` and starting the driver
-  (`README.md` step 2 before step 4). `CHANGE_REQUEST.md` in this very repo
-  is evidence why that window matters: even after being "seeded," most of
-  its sections are still placeholder text. Auto-running the driver
-  immediately after seeding risks kicking off a real, budget-consuming
-  (`WORKFLOW_BUDGET_*`), multi-stage agent pipeline against an unreviewed,
-  templated change request — in tension with CLAUDE.md's "Inspect existing
-  code before proposing changes" and the project's core "human-gated"
-  premise. This is a design decision for CHANGE_SPEC/CHANGE_PLAN, not
-  resolved here.
-- **Wrong-outcome close:** closing on any `COMPLETE` rather than gating on
-  the `FINAL_AUDIT.md` verdict could close an issue for a change that was
-  judged `NOT READY`.
-- **Side-effect scope creep:** `from-issue.sh` today is side-effect-limited
-  (writes one local file, one read-only network call). Chaining it to
-  `change-workflow.sh` changes it into a long-running, real-money-spending,
-  now GitHub-write-capable script — a meaningful behavior/trust change worth
-  making explicit and constrained rather than implicit.
-- **Auth/tooling gap:** the `curl`-only fetch path has no credentialed
-  equivalent for closing; a close request in that path will need explicit
-  failure/skip behavior rather than a silent no-op.
+Medium-high. The request bundles five materially independent changes, two of
+which already appear implemented (issue-close for one entry point, lock
+cleanup) and one of which (auto-zero state on mismatch) conflicts with a
+just-completed, explicitly-reasoned safety mechanism (I-1/I-5) from the prior
+change cycle. The model-default ask is internally contradictory. Proceeding
+without resolving the opus/kimi contradiction and the zero-vs-refuse conflict
+risks either reintroducing AR-001 or shipping a change the human didn't
+actually ask for. Recommend splitting into separately-approved sub-changes in
+CHANGE_SPEC.md rather than one combined spec.

@@ -89,7 +89,7 @@ new_case() {
 
     mkdir -p "$REPO/scripts/lib" "$REPO/.workflow" "$CASE/bin" "$CASE/emptybin"
     cp "$ROOT/scripts/from-issue.sh" "$REPO/scripts/from-issue.sh"
-    cp "$ROOT/scripts/lib/audit-verdict.sh" "$REPO/scripts/lib/audit-verdict.sh"
+    cp "$ROOT"/scripts/lib/*.sh "$REPO/scripts/lib/"
     : > "$GH_LOG"
     : > "$OUT"
 
@@ -100,6 +100,9 @@ if [[ "${1:-}" == "auth" ]]; then
     exit "${FAKE_GH_AUTH_RC:-0}"
 fi
 if [[ "${1:-}" == "issue" && "${2:-}" == "close" ]]; then
+    if [[ -n "${FAKE_GH_CLOSE_SLEEP:-}" ]]; then
+        sleep "$FAKE_GH_CLOSE_SLEEP"
+    fi
     if [[ "${FAKE_GH_CLOSE_RC:-0}" == "0" ]]; then
         echo "stub: closed"
         exit 0
@@ -129,6 +132,13 @@ if [[ -n "${FAKE_DRIVER_VERDICT_TEXT:-}" ]]; then
     printf '%s\t%s\t%s\n' \
         "${FAKE_DRIVER_RUN_ID:-${STAGEGATE_RUN_ID:--}}" "$class" "$hash" \
         > .workflow/audit-verdict
+fi
+if [[ "${FAKE_DRIVER_CLOSED_MARKER:-0}" == "1" ]]; then
+    printf '%s\t%s\t%s\n' "${STAGEGATE_RUN_ID:--}" \
+        "${STAGEGATE_ORIGIN_REPO:-}" "${STAGEGATE_ORIGIN_ISSUE:-}" \
+        > .workflow/issue-closed
+elif [[ -n "${FAKE_DRIVER_MARKER_TEXT:-}" ]]; then
+    printf '%s\n' "$FAKE_DRIVER_MARKER_TEXT" > .workflow/issue-closed
 fi
 if [[ "${FAKE_DRIVER_TAMPER:-0}" == "1" ]]; then
     printf 'tampered\n' >> FINAL_AUDIT.md
@@ -170,11 +180,66 @@ run_runner() {
     RC=$?
 }
 
-# run_driver [VAR=VAL ...] — runs the real change-workflow.sh in the scratch repo
+# run_driver [VAR=VAL ...] — runs the real change-workflow.sh in the scratch repo.
+# STAGEGATE_ORIGIN_*/STAGEGATE_RUN_ID are stripped from the ambient environment:
+# running this suite from inside a live stagegate session otherwise leaks them
+# into every case and trips the origin preflight.
 run_driver() {
     cp "$ROOT/scripts/change-workflow.sh" "$REPO/scripts/change-workflow.sh"
-    env PATH="$CASE/bin:$PATH" "$@" bash "$REPO/scripts/change-workflow.sh" > "$OUT" 2>&1
+    env -u STAGEGATE_ORIGIN_REPO -u STAGEGATE_ORIGIN_ISSUE -u STAGEGATE_RUN_ID \
+        PATH="$CASE/bin:$PATH" GH_LOG_FILE="$GH_LOG" "$@" \
+        bash "$REPO/scripts/change-workflow.sh" > "$OUT" 2>&1
     RC=$?
+}
+
+# Prepares the scratch repo to run the real driver's FINAL_AUDIT stage with a
+# reviewer stub that writes <verdict text> into FINAL_AUDIT.md.
+setup_audit_stage() {
+    mkdir -p "$REPO/prompts/change"
+    cp "$ROOT/prompts/change/final-audit.md" "$REPO/prompts/change/final-audit.md"
+    cat > "$CASE/bin/fake-reviewer" <<REV
+#!/usr/bin/env bash
+out=""
+while [[ \$# -gt 0 ]]; do
+    if [[ "\$1" == "--output-last-message" ]]; then out="\$2"; shift; fi
+    shift
+done
+printf 'Audit body.\n\n%s\n' "$1" > "\$out"
+REV
+    chmod +x "$CASE/bin/fake-reviewer"
+}
+
+expect_state() {
+    COUNT=$((COUNT + 1))
+    if [[ "$(cat "$REPO/.workflow/state" 2>/dev/null)" != "$1" ]]; then
+        fail "expected state '$1', got '$(cat "$REPO/.workflow/state" 2>/dev/null)'"
+    fi
+}
+
+expect_marker() {
+    COUNT=$((COUNT + 1))
+    if [[ ! -s "$REPO/.workflow/issue-closed" ]]; then
+        fail "expected the close marker to be written"
+    fi
+}
+
+expect_no_marker() {
+    COUNT=$((COUNT + 1))
+    if [[ -e "$REPO/.workflow/issue-closed" ]]; then
+        fail "expected no close marker, got: $(cat "$REPO/.workflow/issue-closed")"
+    fi
+}
+
+# How many `gh issue close` calls the stub logged.
+close_calls() {
+    grep -cF "issue close" "$GH_LOG" 2>/dev/null || true
+}
+
+expect_close_count() {
+    COUNT=$((COUNT + 1))
+    if [[ "$(close_calls)" != "$1" ]]; then
+        fail "expected $1 gh issue close call(s), got $(close_calls)"
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -466,6 +531,283 @@ COUNT=$((COUNT + 1))
 expected_record="$(printf 'run-1\tREADY\t%s' "$(shasum -a 256 "$REPO/FINAL_AUDIT.md" | awk '{print $1}')")"
 if [[ "$(cat "$REPO/.workflow/audit-verdict")" != "$expected_record" ]]; then
     fail "verdict record mismatch: $(cat "$REPO/.workflow/audit-verdict")"
+fi
+
+# ---------------------------------------------------------------------------
+# State-token grammar (BEH-B)
+# ---------------------------------------------------------------------------
+
+# A two-field origin is used here on purpose: this case is about the state
+# format, and no fetch provenance keeps the close gate out of it.
+new_case state-prefix-written
+setup_audit_stage READY
+printf 'FINAL_AUDIT\n' > "$REPO/.workflow/state"
+printf 'owner/repo\t42\n' > "$REPO/.workflow/origin"
+run_driver WORKFLOW_REVIEWER_CMD="$CASE/bin/fake-reviewer" STAGEGATE_RUN_ID=run-1
+expect_status 0
+expect_state "42:COMPLETE"
+
+new_case state-bare-still-read
+setup_audit_stage READY
+printf 'FINAL_AUDIT\n' > "$REPO/.workflow/state"
+run_driver WORKFLOW_REVIEWER_CMD="$CASE/bin/fake-reviewer" STAGEGATE_RUN_ID=run-1
+expect_status 0
+expect_out "Audit verdict: READY"
+
+new_case state-no-origin-stays-bare
+setup_audit_stage READY
+printf 'FINAL_AUDIT\n' > "$REPO/.workflow/state"
+run_driver WORKFLOW_REVIEWER_CMD="$CASE/bin/fake-reviewer" STAGEGATE_RUN_ID=run-1
+expect_status 0
+expect_state "COMPLETE"
+
+new_case state-unknown-prefix-refused
+printf 'abc:IMPLEMENT\n' > "$REPO/.workflow/state"
+run_driver
+expect_status 1
+expect_out "Unknown workflow state: abc:IMPLEMENT"
+
+# --- Regression tests for R-1: a prefixed COMPLETE must still read as done ---
+
+new_case seed-gate-prefixed-complete-reseeds
+printf '42:COMPLETE\n' > "$REPO/.workflow/state"
+printf 'owner/repo\t42\tgh\n' > "$REPO/.workflow/origin"
+run_runner seed_gate ""
+expect_status 0
+expect_out "SEED_WRITE"
+
+new_case seed-gate-prefixed-inflight-refuses
+printf '99:IMPLEMENT\n' > "$REPO/.workflow/state"
+printf 'other/repo\t99\tgh\n' > "$REPO/.workflow/origin"
+run_runner seed_gate ""
+expect_status 1
+expect_out "Refusing to seed owner/repo#42"
+
+# The origin here is foreign by repo, not by issue: a foreign *issue* number
+# beside a prefixed state is the AR-004 corruption case, covered separately.
+new_case preflight-prefixed-complete-passes
+printf '42:COMPLETE\n' > "$REPO/.workflow/state"
+printf 'other/repo\t42\tgh\n' > "$REPO/.workflow/origin"
+run_driver STAGEGATE_ORIGIN_REPO=owner/repo STAGEGATE_ORIGIN_ISSUE=42
+expect_status 0
+expect_out "Change workflow complete."
+
+# ---------------------------------------------------------------------------
+# Manual-clear guidance on refusal (BEH-C)
+# ---------------------------------------------------------------------------
+
+new_case seed-gate-mismatch-prints-guidance
+printf 'IMPLEMENT\n' > "$REPO/.workflow/state"
+printf 'other/repo\t99\tgh\n' > "$REPO/.workflow/origin"
+run_runner seed_gate ""
+expect_status 1
+expect_out "rm -f .workflow/state .workflow/origin"
+
+# ---------------------------------------------------------------------------
+# State-prefix / origin-issue corruption (AR-004)
+# ---------------------------------------------------------------------------
+
+new_case state-origin-issue-mismatch-refused
+printf '99:IMPLEMENT\n' > "$REPO/.workflow/state"
+printf 'owner/repo\t42\tgh\n' > "$REPO/.workflow/origin"
+run_runner seed_gate ""
+expect_status 1
+expect_out "Refusing to act on corrupt workflow state"
+expect_out "99 but .workflow/origin names issue 42."
+expect_not_out "Refusing to seed"
+run_driver STAGEGATE_ORIGIN_REPO=owner/repo STAGEGATE_ORIGIN_ISSUE=42
+expect_status 1
+expect_out "Refusing to act on corrupt workflow state"
+expect_not_out "Refusing to resume"
+expect_state "99:IMPLEMENT"
+
+# ---------------------------------------------------------------------------
+# Driver-side close (BEH-D)
+# ---------------------------------------------------------------------------
+
+new_case direct-run-closes
+setup_audit_stage READY
+printf 'FINAL_AUDIT\n' > "$REPO/.workflow/state"
+printf 'owner/repo\t42\tgh\n' > "$REPO/.workflow/origin"
+run_driver WORKFLOW_REVIEWER_CMD="$CASE/bin/fake-reviewer" STAGEGATE_RUN_ID=run-1 \
+    STAGEGATE_ORIGIN_REPO=owner/repo STAGEGATE_ORIGIN_ISSUE=42
+expect_status 0
+expect_out "Closed owner/repo#42 (verdict: READY)."
+expect_closed
+expect_marker
+
+new_case direct-run-not-ready-stays-open
+setup_audit_stage "NOT READY"
+printf 'FINAL_AUDIT\n' > "$REPO/.workflow/state"
+printf 'owner/repo\t42\tgh\n' > "$REPO/.workflow/origin"
+run_driver WORKFLOW_REVIEWER_CMD="$CASE/bin/fake-reviewer" STAGEGATE_RUN_ID=run-1 \
+    STAGEGATE_ORIGIN_REPO=owner/repo STAGEGATE_ORIGIN_ISSUE=42
+expect_status 0
+expect_out "Final audit verdict: NOT_READY — leaving owner/repo#42 open."
+expect_not_closed
+expect_no_marker
+
+new_case direct-run-no-origin-skips-close
+setup_audit_stage READY
+printf 'FINAL_AUDIT\n' > "$REPO/.workflow/state"
+run_driver WORKFLOW_REVIEWER_CMD="$CASE/bin/fake-reviewer" STAGEGATE_RUN_ID=run-1
+expect_status 0
+expect_out "Change workflow complete."
+expect_not_closed
+expect_no_marker
+
+new_case direct-run-gh-unauth-skips-close
+setup_audit_stage READY
+printf 'FINAL_AUDIT\n' > "$REPO/.workflow/state"
+printf 'owner/repo\t42\tgh\n' > "$REPO/.workflow/origin"
+run_driver WORKFLOW_REVIEWER_CMD="$CASE/bin/fake-reviewer" STAGEGATE_RUN_ID=run-1 \
+    STAGEGATE_ORIGIN_REPO=owner/repo STAGEGATE_ORIGIN_ISSUE=42 FAKE_GH_AUTH_RC=1
+expect_status 0
+expect_out "gh is not authenticated; skipping the close."
+expect_not_closed
+expect_no_marker
+
+new_case direct-run-close-flag-off
+setup_audit_stage READY
+printf 'FINAL_AUDIT\n' > "$REPO/.workflow/state"
+printf 'owner/repo\t42\tgh\n' > "$REPO/.workflow/origin"
+run_driver WORKFLOW_REVIEWER_CMD="$CASE/bin/fake-reviewer" STAGEGATE_RUN_ID=run-1 \
+    STAGEGATE_ORIGIN_REPO=owner/repo STAGEGATE_ORIGIN_ISSUE=42 WORKFLOW_CLOSE_ISSUE=0
+expect_status 0
+expect_out "Issue closing is disabled (WORKFLOW_CLOSE_ISSUE=0);"
+expect_not_closed
+expect_no_marker
+
+new_case direct-run-close-fails-still-completes
+setup_audit_stage READY
+printf 'FINAL_AUDIT\n' > "$REPO/.workflow/state"
+printf 'owner/repo\t42\tgh\n' > "$REPO/.workflow/origin"
+run_driver WORKFLOW_REVIEWER_CMD="$CASE/bin/fake-reviewer" STAGEGATE_RUN_ID=run-1 \
+    STAGEGATE_ORIGIN_REPO=owner/repo STAGEGATE_ORIGIN_ISSUE=42 FAKE_GH_CLOSE_RC=1
+expect_status 0
+expect_out "gh issue close failed for owner/repo#42."
+expect_no_marker
+
+# ---------------------------------------------------------------------------
+# Driver / from-issue.sh double-close protection (BEH-D)
+# ---------------------------------------------------------------------------
+
+new_case no-double-close-after-driver
+run_runner confirm "RUN\n" FAKE_DRIVER_VERDICT_TEXT="READY" FAKE_DRIVER_CLOSED_MARKER=1
+expect_status 0
+expect_out "was already closed by change-workflow.sh."
+expect_not_closed
+
+new_case stale-marker-ignored
+run_runner confirm "RUN\n" FAKE_DRIVER_VERDICT_TEXT="READY" \
+    FAKE_DRIVER_MARKER_TEXT="other-run	other/repo	99"
+expect_status 0
+expect_out "Closed owner/repo#42 (verdict: READY)."
+expect_closed
+
+# ---------------------------------------------------------------------------
+# Origin freshness (AR-001)
+# ---------------------------------------------------------------------------
+
+new_case direct-run-stale-origin-fresh-state-skips-close
+setup_audit_stage READY
+printf 'FINAL_AUDIT\n' > "$REPO/.workflow/state"
+printf 'other/repo\t99\tgh\n' > "$REPO/.workflow/origin"
+run_driver WORKFLOW_REVIEWER_CMD="$CASE/bin/fake-reviewer" STAGEGATE_RUN_ID=run-1
+expect_status 0
+expect_out "cannot prove it owns .workflow/origin"
+expect_not_closed
+expect_no_marker
+
+new_case direct-run-explicit-origin-env-closes
+setup_audit_stage READY
+printf 'FINAL_AUDIT\n' > "$REPO/.workflow/state"
+printf 'owner/repo\t42\tgh\n' > "$REPO/.workflow/origin"
+run_driver WORKFLOW_REVIEWER_CMD="$CASE/bin/fake-reviewer" STAGEGATE_RUN_ID=run-1 \
+    STAGEGATE_ORIGIN_REPO=owner/repo STAGEGATE_ORIGIN_ISSUE=42
+expect_status 0
+expect_out "Closed owner/repo#42 (verdict: READY)."
+expect_closed
+
+# ---------------------------------------------------------------------------
+# Close retry on a later run (AR-002)
+# ---------------------------------------------------------------------------
+
+new_case direct-run-close-retries-on-rerun
+setup_audit_stage READY
+printf 'FINAL_AUDIT\n' > "$REPO/.workflow/state"
+printf 'owner/repo\t42\tgh\n' > "$REPO/.workflow/origin"
+run_driver WORKFLOW_REVIEWER_CMD="$CASE/bin/fake-reviewer" STAGEGATE_RUN_ID=run-1 \
+    STAGEGATE_ORIGIN_REPO=owner/repo STAGEGATE_ORIGIN_ISSUE=42 FAKE_GH_CLOSE_RC=1
+expect_status 0
+expect_no_marker
+run_driver STAGEGATE_RUN_ID=run-1 \
+    STAGEGATE_ORIGIN_REPO=owner/repo STAGEGATE_ORIGIN_ISSUE=42
+expect_status 0
+expect_out "Closed owner/repo#42 (verdict: READY)."
+expect_marker
+expect_close_count 2
+
+new_case direct-run-stale-sentinel-run-id-no-retry
+printf 'READY\n' > "$REPO/FINAL_AUDIT.md"
+printf '42:COMPLETE\n' > "$REPO/.workflow/state"
+printf 'owner/repo\t42\tgh\n' > "$REPO/.workflow/origin"
+printf -- '-\tREADY\t%s\n' \
+    "$(shasum -a 256 "$REPO/FINAL_AUDIT.md" | awk '{print $1}')" \
+    > "$REPO/.workflow/audit-verdict"
+run_driver
+expect_status 0
+expect_not_closed
+expect_no_marker
+
+# ---------------------------------------------------------------------------
+# Fetch provenance (AR-003)
+# ---------------------------------------------------------------------------
+
+new_case curl-fallback-driver-side-skips-close
+setup_audit_stage READY
+printf 'FINAL_AUDIT\n' > "$REPO/.workflow/state"
+printf 'owner/repo\t42\tcurl\n' > "$REPO/.workflow/origin"
+run_driver WORKFLOW_REVIEWER_CMD="$CASE/bin/fake-reviewer" STAGEGATE_RUN_ID=run-1 \
+    STAGEGATE_ORIGIN_REPO=owner/repo STAGEGATE_ORIGIN_ISSUE=42
+expect_status 0
+expect_out "unauthenticated curl fallback"
+expect_not_closed
+expect_no_marker
+
+new_case legacy-two-field-origin-skips-close
+setup_audit_stage READY
+printf 'FINAL_AUDIT\n' > "$REPO/.workflow/state"
+printf 'owner/repo\t42\n' > "$REPO/.workflow/origin"
+run_driver WORKFLOW_REVIEWER_CMD="$CASE/bin/fake-reviewer" STAGEGATE_RUN_ID=run-1 \
+    STAGEGATE_ORIGIN_REPO=owner/repo STAGEGATE_ORIGIN_ISSUE=42
+expect_status 0
+expect_out "unauthenticated curl fallback"
+expect_not_closed
+expect_no_marker
+
+# ---------------------------------------------------------------------------
+# Bounded close call (AR-008)
+# ---------------------------------------------------------------------------
+
+new_case direct-run-close-timeout-treated-as-failure
+if ! command -v timeout >/dev/null 2>&1 && ! command -v gtimeout >/dev/null 2>&1; then
+    echo "NOTE [$CASE_NAME] skipped: neither timeout nor gtimeout is available"
+else
+    setup_audit_stage READY
+    printf 'FINAL_AUDIT\n' > "$REPO/.workflow/state"
+    printf 'owner/repo\t42\tgh\n' > "$REPO/.workflow/origin"
+    run_driver WORKFLOW_REVIEWER_CMD="$CASE/bin/fake-reviewer" STAGEGATE_RUN_ID=run-1 \
+        STAGEGATE_ORIGIN_REPO=owner/repo STAGEGATE_ORIGIN_ISSUE=42 \
+        STAGEGATE_CLOSE_TIMEOUT=1 FAKE_GH_CLOSE_SLEEP=5
+    expect_status 0
+    expect_out "gh issue close exceeded the 1s deadline."
+    expect_out "gh issue close failed for owner/repo#42."
+    expect_no_marker
+    COUNT=$((COUNT + 1))
+    if [[ -d "$REPO/.workflow/lock" ]]; then
+        fail "lock must be released after a timed-out close"
+    fi
 fi
 
 if [[ "$FAILED" -ne 0 ]]; then
