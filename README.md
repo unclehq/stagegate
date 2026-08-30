@@ -94,7 +94,7 @@ never with permission-bypass flags.
    ```
 
 4. Answer the gates. Each gate prints the file to review; open it in another
-   terminal, come back, and type the exact word requested.
+   terminal, come back, and answer `y` to approve. Anything else declines.
 
 ### Run a change request
 
@@ -164,10 +164,10 @@ command — they pick up from `.workflow/state`.
 
 | # | Stage | Agent | Produces | Gate |
 |---|---|---|---|---|
-| 1 | Requirements | Primary agent | `REQUIREMENTS_INTERPRETATION.md` | `APPROVE` |
-| 2 | Project plan | Primary agent | `PROJECT_PLAN.md` | `APPROVE` |
-| 3 | Adversarial review | Reviewer | `ADVERSARIAL_REVIEW.md` | `ACKNOWLEDGE` |
-| 4 | Updated plan | Primary agent | `UPDATED_PROJECT_PLAN.md` | `APPROVE` |
+| 1 | Requirements | Primary agent | `REQUIREMENTS_INTERPRETATION.md` | `Y/N` |
+| 2 | Project plan | Primary agent | `PROJECT_PLAN.md` | `Y/N` |
+| 3 | Adversarial review | Reviewer | `ADVERSARIAL_REVIEW.md` | `Y/N` |
+| 4 | Updated plan | Primary agent | `UPDATED_PROJECT_PLAN.md` | `Y/N` |
 | 5 | Implementation | Primary agent | source, `IMPLEMENTATION_NOTES.md`, `AUTOMATED_TEST_REPORT.md` | — |
 | 6 | Manual checklist | Reviewer | `MANUAL_CHECKLIST.md` | — |
 | 7 | Checklist execution | Primary agent | `VERIFICATION_REPORT.md`, `DEFECTS.md` | — |
@@ -181,16 +181,18 @@ alone, because nothing downstream reads `PROJECT_PLAN.md` or
 
 | State | Agent | Produces | Gate |
 |---|---|---|---|
-| `ANALYZE` | Primary agent | `BASELINE_REPORT.md`, `CHANGE_SPEC.md` | `APPROVE` |
-| `PLAN` | Primary agent + reviewer | `CHANGE_PLAN.md`, `ADVERSARIAL_REVIEW.md` | `ACKNOWLEDGE` |
-| `UPDATED_PLAN` | Primary agent | `UPDATED_CHANGE_PLAN.md` | `APPROVE` |
+| `ANALYZE` | Primary agent | `BASELINE_REPORT.md`, `CHANGE_SPEC.md` | `Y/N` |
+| `PLAN` | Primary agent + reviewer | `CHANGE_PLAN.md`, `ADVERSARIAL_REVIEW.md` | `Y/N` |
+| `UPDATED_PLAN` | Primary agent | `CHANGE_PLAN.md` (revised in place) | `Y/N` |
 | `IMPLEMENT` | Primary agent + reviewer | source, `IMPLEMENTATION_NOTES.md`, `CHANGE_TEST_REPORT.md` | — |
 | `CHECKLIST` | Reviewer | `MANUAL_CHECKLIST.md` | — |
 | `EXECUTE_CHECKLIST` | Primary agent | `VERIFICATION_REPORT.md`, `DEFECTS.md` | — |
 | `FINAL_AUDIT` | Reviewer | `FINAL_AUDIT.md` | — |
 
-`UPDATED_CHANGE_PLAN.md` is the sole plan input to implementation and
-verification. The reviewer writes the verification checklist concurrently
+`CHANGE_PLAN.md` is the sole plan input to implementation and verification.
+The `UPDATED_PLAN` stage answers the adversarial review by editing that file in
+place — appending a disposition table and the frozen-scope sections — rather
+than writing a second plan that restates the first. The reviewer writes the verification checklist concurrently
 during implementation from the frozen, approved artifacts so it cannot race the
 primary agent's edits.
 
@@ -208,15 +210,17 @@ An approval records the SHA-256 of the exact bytes you read, in
 it changed. Edit an approved document and the pipeline stops until you approve
 it again.
 
-Typing anything other than the requested word pauses the workflow and exits
-cleanly — state is preserved, so re-running resumes at the same gate.
+A gate prompt names the action and the file(s) it covers and ends with `[Y/N]`.
+Only `y` or `Y` approves; anything else — including `n`, an empty line, a
+leading space, or closed stdin — pauses the workflow and exits cleanly. State is
+preserved, so re-running resumes at the same gate.
 
 While you read a gated document, the driver starts the *next* stage in the
 background (speculative execution). The result is adopted only if the file is
 byte-identical when you approve; any edit during review discards that work and
 the stage replays. Implementation is never speculated — it may not begin before
-the approved updated plan (`UPDATED_PROJECT_PLAN.md` or
-`UPDATED_CHANGE_PLAN.md`) is in place.
+the approved updated plan (`UPDATED_PROJECT_PLAN.md` or the revised
+`CHANGE_PLAN.md`) is in place.
 
 Disable it with `WORKFLOW_SPECULATE=0` if you routinely edit documents mid-review
 or want strictly serial token spend.

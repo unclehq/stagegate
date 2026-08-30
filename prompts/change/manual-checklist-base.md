@@ -15,7 +15,6 @@ your run:
 - CHANGE_SPEC.md
 - CHANGE_PLAN.md
 - ADVERSARIAL_REVIEW.md
-- UPDATED_CHANGE_PLAN.md
 
 ## Files you must not read
 
@@ -26,7 +25,7 @@ Those files are being written while you run. Reading a half-written file would
 put unreliable content into the checklist, and reading the implementation would
 bias the checklist toward what was built rather than what was specified.
 
-UPDATED_CHANGE_PLAN.md already tells you which files are expected to change,
+CHANGE_PLAN.md already tells you which files are expected to change,
 what behavioral differences to expect, and what must stay the same. Write every
 check from that.
 

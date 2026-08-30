@@ -235,7 +235,7 @@ The user is the approval authority. Never bypass an approval gate.
 6. Preserve backward compatibility unless `CHANGE_SPEC.md` permits otherwise.
 7. Do not weaken tests to accommodate the implementation.
 8. For reproducible bugs, add a regression test before the fix where practical.
-9. Record every material deviation from `UPDATED_CHANGE_PLAN.md`.
+9. Record every material deviation from the approved `CHANGE_PLAN.md`.
 10. Never claim a check passed unless it was executed.
 11. Treat prototypes as isolated experiments.
 12. Do not modify reviewer-owned artifacts.
@@ -271,9 +271,8 @@ Any RELAXED or REMOVED invariant requires explicit human approval.
 | CHANGE_REQUEST.md | Human |
 | BASELINE_REPORT.md | Primary agent |
 | CHANGE_SPEC.md | Primary agent |
-| CHANGE_PLAN.md | Primary agent |
+| CHANGE_PLAN.md | Primary agent (revised in place after review) |
 | ADVERSARIAL_REVIEW.md | Reviewer |
-| UPDATED_CHANGE_PLAN.md | Primary agent |
 | Source changes | Primary agent |
 | IMPLEMENTATION_NOTES.md | Primary agent |
 | CHANGE_TEST_REPORT.md | Primary agent |

@@ -64,6 +64,13 @@ Do not implement code.
 Length is a cost. Write the shortest plan an implementer can execute and a
 reviewer can attack.
 
+This document is not superseded later: the adversarial review is answered by
+editing this file in place, and every stage after that reads this file. Write
+sections that can be edited surgically — one claim per line, tables over
+paragraphs — rather than prose that has to be rewritten wholesale to change one
+fact.
+
+- Budget: **1,800 words or fewer**, excluding tables.
 - Omit any numbered section with no substantive content for this change. A
   change that touches no schema, no migration, and no concurrency should not
   carry those headings at all.

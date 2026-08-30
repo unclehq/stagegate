@@ -68,6 +68,33 @@ upper() {
     printf '%s' "$1" | tr '[:lower:]' '[:upper:]'
 }
 
+# ...nor ${var,,}.
+lower() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+# One bold prompt line. `read -p` suppresses its prompt when stdin is not a
+# terminal, so the text is printed separately. Escapes are emitted only for a
+# real terminal: piped captures and TERM=dumb stay free of control bytes.
+gate_prompt() {
+    if [[ -t 1 && "${TERM:-}" != "dumb" ]]; then
+        printf '%s%s%s' $'\033[1m' "$1" $'\033[0m'
+    else
+        printf '%s' "$1"
+    fi
+}
+
+# The gate used to require the words APPROVE/ACKNOWLEDGE. Automation that still
+# pipes them now declines; say so, so the break is visible in the output rather
+# than silent.
+legacy_word_notice() {
+    case "$(upper "$1")" in
+        APPROVE|ACKNOWLEDGE)
+            echo "This gate now requires 'y' to approve."
+            ;;
+    esac
+}
+
 # bash 3.2 has no associative arrays, so per-stage settings are a case table
 # with an environment override resolved through the variable name.
 stage_setting() {
@@ -182,7 +209,7 @@ review_and_approve() {
     local file="$1"
     local name="$2"
     local wording
-    wording="$(upper "${3:-approve}")"
+    wording="$(lower "${3:-approve}")"
 
     require_file "$file"
 
@@ -206,15 +233,31 @@ review_and_approve() {
         echo "  code $file"
         echo
 
-        read -r -p "Press ENTER after reviewing the file..."
-
-        echo
-        read -r -p "Type $wording exactly to continue: " response
-
-        if [[ "$response" != "$wording" ]]; then
+        # Closed stdin here would abort the driver under `set -e` before the
+        # Y/N prompt, so EOF is routed to the same decline path as any other
+        # non-answer.
+        if ! read -r -p "Press ENTER after reviewing the file..."; then
+            echo
             echo "Gate not accepted. Workflow paused."
             exit 0
         fi
+
+        echo
+        gate_prompt "Ready to $wording $file? [Y/N] "
+        # IFS= keeps surrounding whitespace, so " y" is not an approval.
+        # `|| true` keeps EOF from tripping `set -e` before the decline path
+        # runs.
+        response=""
+        IFS= read -r response || true
+
+        case "$response" in
+            y|Y) ;;
+            *)
+                echo "Gate not accepted. Workflow paused."
+                legacy_word_notice "$response"
+                exit 0
+                ;;
+        esac
 
         # The approval must attest to the bytes that were actually read. If the
         # file moved during review — a human edit, or a speculative stage that
@@ -230,7 +273,10 @@ review_and_approve() {
         cancel_speculation
     done
 
-    hash_file "$file" > "$APPROVAL_DIR/${name}.sha256"
+    # `before` is the digest that was just validated against the file, so it is
+    # what gets recorded. Re-hashing here would attest to bytes that could have
+    # landed after the check.
+    printf '%s\n' "$before" > "$APPROVAL_DIR/${name}.sha256"
     echo "Recorded approval for $file"
 }
 

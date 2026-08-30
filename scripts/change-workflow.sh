@@ -127,6 +127,28 @@ hash_file() {
     shasum -a 256 "$1" | awk '{print $1}'
 }
 
+# One bold prompt line. `read -p` suppresses its prompt when stdin is not a
+# terminal, so the text is printed separately. Escapes are emitted only for a
+# real terminal: piped captures and TERM=dumb stay free of control bytes.
+gate_prompt() {
+    if [[ -t 1 && "${TERM:-}" != "dumb" ]]; then
+        printf '%s%s%s' $'\033[1m' "$1" $'\033[0m'
+    else
+        printf '%s' "$1"
+    fi
+}
+
+# The gate used to require the words APPROVE/ACKNOWLEDGE. Automation that still
+# pipes them now declines; say so, so the break is visible in the output rather
+# than silent.
+legacy_word_notice() {
+    case "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')" in
+        APPROVE|ACKNOWLEDGE)
+            echo "This gate now requires 'y' to approve."
+            ;;
+    esac
+}
+
 # Pure FINAL_AUDIT.md verdict classifier, shared with scripts/tests/. Sourced
 # self-relative so the driver still runs from any CWD.
 . "$ROOT/scripts/lib/audit-verdict.sh"
@@ -385,23 +407,58 @@ human_gate() {
     show_spend
     echo
 
+    # Closed stdin here would abort the driver under `set -e` before the Y/N
+    # prompt, so EOF is routed to the same decline path as any other non-answer.
+    local prompt="Press ENTER after reviewing..."
     if [[ "${#files[@]}" -gt 1 ]]; then
-        read -r -p "Press ENTER after reviewing all documents above..."
-    else
-        read -r -p "Press ENTER after reviewing..."
+        prompt="Press ENTER after reviewing all documents above..."
     fi
-
-    echo
-    read -r -p "Type $action exactly to continue: " response
-
-    if [[ "$response" != "$action" ]]; then
+    if ! read -r -p "$prompt"; then
+        echo
         echo "Gate not accepted. Workflow remains paused."
         exit 0
     fi
 
+    # Digests are captured before the prompt and recorded afterwards, so each
+    # approval attests to the bytes the operator was shown.
+    local -a digests=()
     local i
     for i in "${!files[@]}"; do
-        hash_file "${files[$i]}" > "$APPROVAL_DIR/${names[$i]}.sha256"
+        digests+=("$(hash_file "${files[$i]}")")
+    done
+
+    local verb targets response=""
+    verb="$(printf '%s' "$action" | tr '[:upper:]' '[:lower:]')"
+    targets="$(printf '%s, ' "${files[@]}")"
+    targets="${targets%, }"
+
+    echo
+    gate_prompt "Ready to $verb $targets? [Y/N] "
+    # IFS= keeps surrounding whitespace, so " y" is not an approval. `|| true`
+    # keeps EOF from tripping `set -e` before the decline path runs.
+    IFS= read -r response || true
+
+    case "$response" in
+        y|Y) ;;
+        *)
+            echo "Gate not accepted. Workflow remains paused."
+            legacy_word_notice "$response"
+            exit 0
+            ;;
+    esac
+
+    # Every file is re-checked before any approval is written, so a mutated
+    # document cannot leave a half-approved gate behind.
+    for i in "${!files[@]}"; do
+        if [[ "$(hash_file "${files[$i]}")" != "${digests[$i]}" ]]; then
+            echo "${files[$i]} changed after it was shown for approval."
+            echo "Gate not accepted. Workflow remains paused."
+            exit 0
+        fi
+    done
+
+    for i in "${!files[@]}"; do
+        printf '%s\n' "${digests[$i]}" > "$APPROVAL_DIR/${names[$i]}.sha256"
         echo "Recorded approval for ${files[$i]}"
     done
 }
@@ -781,22 +838,33 @@ while true; do
             verify_approval CHANGE_PLAN.md CHANGE_PLAN
             verify_approval ADVERSARIAL_REVIEW.md ADVERSARIAL_REVIEW
 
+            # The review response revises CHANGE_PLAN.md in place rather than
+            # writing a second plan. A separate UPDATED_CHANGE_PLAN.md restated
+            # every section of the plan it superseded, and five later stages
+            # then carried the longer copy in context. Snapshot the approved
+            # pre-review text first: nothing reads it, so it costs no tokens,
+            # and it keeps the record of what the review actually changed.
+            cp CHANGE_PLAN.md "$STATE_DIR/CHANGE_PLAN.pre-review.md"
+
             run_claude prompts/change/updated-change-plan.md updated-change-plan \
                 "$MODEL_UPDATED_PLAN" "$EFFORT_UPDATED_PLAN" 60 \
                 "$BUDGET_UPDATED_PLAN"
-            require_file UPDATED_CHANGE_PLAN.md
+            require_file CHANGE_PLAN.md
 
             set_state WAIT_UPDATED_PLAN_APPROVAL
             ;;
 
         WAIT_UPDATED_PLAN_APPROVAL)
+            # Re-approving CHANGE_PLAN overwrites the ACKNOWLEDGE hash taken
+            # before the revision, so the recorded approval always names the
+            # text implementation will run against.
             human_gate APPROVE \
-                UPDATED_CHANGE_PLAN.md UPDATED_CHANGE_PLAN
+                CHANGE_PLAN.md CHANGE_PLAN
             set_state IMPLEMENT
             ;;
 
         IMPLEMENT)
-            verify_approval UPDATED_CHANGE_PLAN.md UPDATED_CHANGE_PLAN
+            verify_approval CHANGE_PLAN.md CHANGE_PLAN
 
             # The verification checklist is derived from the frozen, approved
             # artifacts, so it can be written while the implementation runs

@@ -3,7 +3,7 @@ Act as an independent final change auditor.
 Read:
 
 - CHANGE_SPEC.md
-- UPDATED_CHANGE_PLAN.md
+- CHANGE_PLAN.md
 - BASELINE_REPORT.md
 - source-code diff at .workflow/change.diff
 - changed tests

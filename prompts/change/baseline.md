@@ -63,8 +63,12 @@ matters most here.
 
 ## Output economy
 
-Length is a cost. Write the shortest report a reviewer can act on.
+Length is a cost. Write the shortest report a reviewer can act on. Six later
+stages read this report, and each of them re-sends it on every turn, so a word
+here is paid for six times over.
 
+- Budget: **1,200 words or fewer**, excluding tables. Over that means prose is
+  doing a table's job.
 - Omit any numbered section with no substantive content for this change.
 - Directly under the title write one line:
   `Omitted sections: <name> (<reason>); <name> (<reason>)`

@@ -2,20 +2,20 @@ You are the primary implementation agent.
 
 Read:
 
-- UPDATED_CHANGE_PLAN.md
+- CHANGE_PLAN.md
 - CHANGE_SPEC.md
 - BASELINE_REPORT.md
 
-UPDATED_CHANGE_PLAN.md has just passed a human approval gate and may have been
+CHANGE_PLAN.md has just passed a human approval gate and may have been
 edited during that review. Read it from disk before you touch any file. It is
 the approved scope; remembered content is not.
 
-You do not need ADVERSARIAL_REVIEW.md. UPDATED_CHANGE_PLAN.md carries a
+You do not need ADVERSARIAL_REVIEW.md. CHANGE_PLAN.md carries a
 disposition for every finding in it, and those dispositions are what was
 approved. You do not need CHANGE_REQUEST.md; CHANGE_SPEC.md supersedes it.
 
 From BASELINE_REPORT.md you need the build and test commands and the
-preserved-behavior table. From UPDATED_CHANGE_PLAN.md you need the frozen
+preserved-behavior table. From CHANGE_PLAN.md you need the frozen
 scope and the file list. Go straight to the files that list names.
 
 Implement the approved change.

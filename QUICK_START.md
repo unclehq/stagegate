@@ -18,7 +18,7 @@ Write a project brief in `REQUIREMENTS.md` under `# Project brief`, then run:
 ```
 
 The driver stops at each gate and asks you to approve the produced document.
-Type the requested word (`APPROVE` or `ACKNOWLEDGE`) to continue.
+Answer `y` to continue; anything else pauses the workflow.
 
 ### Start from a GitHub issue
 
@@ -68,7 +68,7 @@ The workflow runs stages and pauses at gates:
 | New app | Requirements → Plan → Adversarial review → Updated plan → Implementation → Manual checklist → Execution → Final audit |
 | Change request | Analyze → Plan → Adversarial review → Updated plan → Implement → Checklist → Execution → Final audit |
 
-At each gate, open the listed file, read it, and type the requested word.
+At each gate, open the listed file, read it, and answer `y` to approve.
 
 ## 4. Reading the result
 

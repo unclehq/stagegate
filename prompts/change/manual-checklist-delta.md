@@ -8,7 +8,7 @@ Read:
 
 - .workflow/MANUAL_CHECKLIST.base.md
 - CHANGE_SPEC.md
-- UPDATED_CHANGE_PLAN.md
+- CHANGE_PLAN.md
 - IMPLEMENTATION_NOTES.md
 - CHANGE_TEST_REPORT.md
 - .workflow/change.diff
@@ -24,7 +24,7 @@ Do not claim any check passed.
    with the exact action against the code as built.
 2. Add checks for anything the implementation did that the specification did
    not anticipate: recorded deviations, files changed that
-   UPDATED_CHANGE_PLAN.md did not list, and new failure modes visible in the
+   CHANGE_PLAN.md did not list, and new failure modes visible in the
    diff.
 3. Add checks for any gap CHANGE_TEST_REPORT.md leaves open, including every
    item it marked `NOT RUN`.

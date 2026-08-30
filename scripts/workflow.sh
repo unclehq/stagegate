@@ -25,6 +25,28 @@ hash_file() {
     shasum -a 256 "$1" | awk '{print $1}'
 }
 
+# One bold prompt line. `read -p` suppresses its prompt when stdin is not a
+# terminal, so the text is printed separately. Escapes are emitted only for a
+# real terminal: piped captures and TERM=dumb stay free of control bytes.
+gate_prompt() {
+    if [[ -t 1 && "${TERM:-}" != "dumb" ]]; then
+        printf '%s%s%s' $'\033[1m' "$1" $'\033[0m'
+    else
+        printf '%s' "$1"
+    fi
+}
+
+# The gate used to require the words APPROVE/ACKNOWLEDGE. Automation that still
+# pipes them now declines; say so, so the break is visible in the output rather
+# than silent.
+legacy_word_notice() {
+    case "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')" in
+        APPROVE|ACKNOWLEDGE)
+            echo "This gate now requires 'y' to approve."
+            ;;
+    esac
+}
+
 approve_file() {
     local file="$1"
     local approval_name="$2"
@@ -34,18 +56,39 @@ approve_file() {
         exit 1
     fi
 
+    # The digest is captured before the prompt and recorded afterwards, so the
+    # approval attests to the bytes shown here rather than to whatever is on
+    # disk once the operator has answered.
+    local captured
+    captured="$(hash_file "$file")"
+
+    local confirmation=""
+
     echo
     echo "You are approving: $file"
-    echo "SHA-256: $(hash_file "$file")"
+    echo "SHA-256: $captured"
     echo
-    read -r -p "Type APPROVE exactly to continue: " confirmation
+    gate_prompt "Ready to approve $file? [Y/N] "
+    # IFS= keeps surrounding whitespace, so " y" is not an approval. `|| true`
+    # keeps EOF from tripping `set -e` before the decline path runs.
+    IFS= read -r confirmation || true
 
-    if [[ "$confirmation" != "APPROVE" ]]; then
+    case "$confirmation" in
+        y|Y) ;;
+        *)
+            echo "Approval cancelled."
+            legacy_word_notice "$confirmation"
+            exit 1
+            ;;
+    esac
+
+    if [[ "$(hash_file "$file")" != "$captured" ]]; then
+        echo "$file changed after the digest above was shown."
         echo "Approval cancelled."
         exit 1
     fi
 
-    hash_file "$file" > ".workflow/approvals/${approval_name}.sha256"
+    printf '%s\n' "$captured" > ".workflow/approvals/${approval_name}.sha256"
     echo "Approved $file"
 }
 

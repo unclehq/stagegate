@@ -95,7 +95,7 @@ stage runs.
 `scripts/workflow.sh status` only shows greenfield approvals
 (`PROJECT_PLAN`, `ADVERSARIAL_REVIEW`, `UPDATED_PROJECT_PLAN`). Extend it to
 also show the change-workflow approvals
-(`BASELINE_REPORT`, `CHANGE_SPEC`, `CHANGE_PLAN`, `UPDATED_CHANGE_PLAN`).
+(`BASELINE_REPORT`, `CHANGE_SPEC`, `CHANGE_PLAN`).
 
 **Files to touch:**
 

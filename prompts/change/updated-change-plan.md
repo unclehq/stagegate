@@ -14,9 +14,14 @@ as needed. You do not need CHANGE_REQUEST.md or BASELINE_REPORT.md: the plan and
 the spec already encode them. Open one only if a specific finding turns on
 something neither document records.
 
-Create UPDATED_CHANGE_PLAN.md.
+Revise CHANGE_PLAN.md in place. Do not create a second plan document.
 
-Include a disposition for every adversarial finding:
+Edit only the sections the review actually changes. A section the review did not
+touch is left exactly as it is — do not rewrite it, reword it, or restate it.
+CHANGE_PLAN.md is the sole plan input to every later stage, so what you leave
+behind is what implementation executes.
+
+Insert directly below the title a disposition for every adversarial finding:
 
 | Finding | Disposition | Reason | Exact plan change |
 |---|---|---|---|
@@ -28,21 +33,11 @@ Allowed dispositions:
 - Rejected
 - Deferred
 
-Retain and update:
+The `Exact plan change` cell names the section you edited, or `none` for a
+rejected or deferred finding. The disposition table covers every finding. It is
+never omitted and never abbreviated.
 
-- change scope
-- behavior classifications
-- invariants
-- compatibility strategy
-- migration strategy
-- rollback strategy
-- test strategy
-- regression strategy
-- observability
-- implementation order
-- traceability
-
-Add:
+Append these sections:
 
 1. Frozen change scope
 2. Files expected to change
@@ -59,22 +54,23 @@ Do not implement code.
 
 ## Output economy
 
-CHANGE_PLAN.md is hash-approved and immutable, so this document may reference
-it instead of reproducing it.
+Length is a cost. The revised CHANGE_PLAN.md is read by five later stages and
+re-sent on every turn of each of them.
 
-- For each retained section that the review did not change, write one line:
-  `Unchanged from CHANGE_PLAN.md § <n>`.
-- Reproduce in full only the sections the review actually changed, plus the
-  ten added sections.
-- Omit any added section with no substantive content, and list it directly
-  under the title as
-  `Omitted sections: <name> (<reason>)`, or write `Omitted sections: none`.
-- The disposition table covers every adversarial finding. It is never omitted
-  and never abbreviated.
+- Budget: the disposition table and the ten appended sections together should
+  come to **1,200 words or fewer**. Going over means the appended sections are
+  carrying prose that belongs in a table.
+- Editing a section means changing the lines the review invalidated. It does
+  not mean rewriting the section from scratch.
+- Do not summarize what you changed at the end. The disposition table is that
+  record.
+- Omit any appended section with no substantive content, and list it under the
+  disposition table as `Omitted sections: <name> (<reason>)`, or write
+  `Omitted sections: none`.
 - Frozen change scope, files expected to change, files that must not change,
   and exact acceptance criteria are never omitted. Implementation is bounded
   by them.
 - Never omit a section to avoid resolving something. If a section applies but
   you cannot complete it, keep it and mark it UNRESOLVED with the reason.
 
-Write UPDATED_CHANGE_PLAN.md and stop.
+Save CHANGE_PLAN.md and stop.
