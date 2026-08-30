@@ -97,6 +97,19 @@ CODEX_EFFORT_AUDIT="${WORKFLOW_CODEX_EFFORT_AUDIT:-high}"
 # to trade the money back for latency.
 SESSION_REUSE="${WORKFLOW_SESSION_REUSE:-0}"
 
+# Run implementation as one invocation per step of CHANGE_PLAN.md's
+# implementation sequence, each with a fresh context, instead of one long run.
+#
+# Nothing is evicted from a context, so cost is turns x context and the last
+# turns of a 200-turn run are the most expensive tokens in the pipeline.
+# Splitting resets the accumulated tool output at each step; the plan and the
+# spec are re-read per step, so the fixed part is paid N times while the
+# growing part is paid once per step instead of once per run.
+#
+# Off by default: it changes how the most consequential stage runs, and a step
+# boundary in the wrong place costs coherence, which is worth more than tokens.
+STEPWISE_IMPLEMENT="${WORKFLOW_STEPWISE_IMPLEMENT:-0}"
+
 # Write the Codex verification checklist concurrently with implementation.
 # Set to 0 to fall back to the serial single-shot checklist stage.
 PARALLEL_CHECKLIST="${WORKFLOW_PARALLEL_CHECKLIST:-1}"
@@ -155,6 +168,7 @@ legacy_word_notice() {
 
 # .workflow/state grammar, and the shared INV-3 close gate.
 . "$ROOT/scripts/lib/state.sh"
+. "$ROOT/scripts/lib/plan-scope.sh"
 . "$ROOT/scripts/lib/issue-close.sh"
 
 require_file() {
@@ -246,6 +260,25 @@ origin_preflight() {
     fi
 
     state="$(get_state)"
+
+    # A COMPLETE state belonging to a different issue is the previous run's
+    # residue. Leaving it in place would send this invocation straight to the
+    # COMPLETE branch, which prints "Change workflow complete" and offers to
+    # close an issue whose work never started. Rebind to this issue at ANALYZE
+    # and drop the finished run's per-run records so nothing carries over.
+    # An unprefixed COMPLETE was written by an older driver and cannot be shown
+    # to belong to a different issue, so it is left alone — the same rule
+    # state_origin_agree applies to a missing prefix.
+    local finished_issue
+    finished_issue="$(state_issue "$STATE_FILE")"
+    if [[ "$state" == "COMPLETE" && -n "$finished_issue" && "$finished_issue" != "$issue" ]]; then
+        echo "Previous run for issue $finished_issue is COMPLETE;" \
+             "starting $repo#$issue."
+        rm -f "$VERDICT_FILE" "$MARKER_FILE" "$SESSION_FILE"
+        state_write "$STATE_FILE" ANALYZE "$issue"
+        return 0
+    fi
+
     if [[ ! -s "$STATE_FILE" || "$state" == "COMPLETE" ]]; then
         return 0
     fi
@@ -484,6 +517,175 @@ format_claude_stream() {
               "\n[done] \($e.subtype) — \($e.num_turns) turns, \($e.duration_ms / 1000 | floor)s, $\($e.total_cost_usd // 0 | .*100 | round / 100)"
           else empty end
     '
+}
+
+# Compose the implementation prompt with the plan's own change-impact table
+# resolved into a file list. The prompt already said "go straight to the files
+# named in the frozen scope"; without this the agent had to find them, which
+# meant reading the plan for navigation and re-exploring the repository when
+# that was ambiguous. Printed into the prompt, the scope costs a few hundred
+# tokens once instead of a search that is re-sent on every later turn.
+compose_implementation_prompt() {
+    local base="$1" out="$2"
+    local files
+    files="$(plan_scope_files CHANGE_PLAN.md)"
+
+    cat "$base" > "$out"
+
+    if [[ -z "$files" ]]; then
+        echo "Warning: no change-impact table found in CHANGE_PLAN.md;" \
+             "implementation runs without a resolved scope." >&2
+        return 0
+    fi
+
+    {
+        echo
+        echo "## Frozen scope"
+        echo
+        echo "CHANGE_PLAN.md's change-impact table names these files. This list"
+        echo "is generated from it, so it is the plan's own commitment, not a"
+        echo "summary of it:"
+        echo
+        printf -- '- %s\n' $files
+        echo
+        echo "Open these directly. Do not search the repository for the change"
+        echo "surface; it is above."
+        echo
+        echo "Changing a file outside this list is allowed but is a deviation:"
+        echo "name the file and the reason in IMPLEMENTATION_NOTES.md. The"
+        echo "driver checks the diff against this list and fails the stage on an"
+        echo "unrecorded one."
+    } >> "$out"
+}
+
+# Rule 9 of the implementation prompt requires every material deviation to be
+# recorded. That was unenforced, so the change surface could grow silently: on
+# issue #4 the diff touched app/config.py, app/records/models.py and a new
+# migration, none of which the change-impact table named.
+#
+# Going outside the plan is legitimate — a review disposition routinely
+# requires it. Doing so without writing it down is not.
+check_scope_deviations() {
+    local changed extra missing=""
+
+    changed="$(git diff --name-only; git diff --cached --name-only)"
+    changed="$(printf '%s\n' "$changed" | sort -u | grep -v '^$' || true)"
+    [[ -n "$changed" ]] || return 0
+
+    if [[ -z "$(plan_scope_files CHANGE_PLAN.md)" ]]; then
+        echo
+        echo "Warning: CHANGE_PLAN.md has no change-impact table, so the diff" \
+             "could not be checked against a frozen scope."
+        return 0
+    fi
+
+    extra="$(plan_out_of_scope CHANGE_PLAN.md $changed)"
+    [[ -n "$extra" ]] || return 0
+
+    local f
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        if ! grep -qF "$f" IMPLEMENTATION_NOTES.md 2>/dev/null; then
+            missing="$missing$f"$'\n'
+        fi
+    done <<< "$extra"
+
+    echo
+    echo "Files changed outside CHANGE_PLAN.md's change-impact table:"
+    printf '%s\n' "$extra" | sed 's/^/  /'
+
+    if [[ -n "$missing" ]]; then
+        echo
+        echo "Not recorded as deviations in IMPLEMENTATION_NOTES.md:"
+        printf '%s' "$missing" | sed 's/^/  /'
+        echo
+        echo "Every file outside the frozen scope must be named there with its"
+        echo "reason. Add them, or revert the unintended edits, then re-run."
+        exit 1
+    fi
+
+    echo "  (all recorded in IMPLEMENTATION_NOTES.md)"
+}
+
+# One invocation per implementation-sequence step, each starting cold.
+#
+# IMPLEMENTATION_NOTES.md is the handoff: every step appends to it, and the
+# next step reads it instead of inheriting a transcript. The code already
+# written is on disk, which is the other half of the handoff.
+run_stepwise_implementation() {
+    local base="$1"
+    local steps_file="$STATE_DIR/implement-steps.txt"
+    local done_file="$STATE_DIR/implement-step-done"
+
+    plan_steps CHANGE_PLAN.md > "$steps_file"
+
+    local total
+    total="$(grep -c . "$steps_file" || true)"
+
+    if [[ "${total:-0}" -lt 2 ]]; then
+        echo "CHANGE_PLAN.md has no usable implementation sequence;" \
+             "running implementation as a single stage."
+        compose_implementation_prompt "$base" "$STATE_DIR/implement-change.resolved.md"
+        run_claude "$STATE_DIR/implement-change.resolved.md" implementation \
+            "$MODEL_IMPLEMENT" "" 200 "$BUDGET_IMPLEMENT"
+        return 0
+    fi
+
+    # Split the single stage's caps across the steps rather than multiplying
+    # them: the point is to spend fewer tokens, not to authorise more.
+    local turns=$(( 200 / total ))
+    [[ "$turns" -lt 40 ]] && turns=40
+
+    local completed=0
+    if [[ -s "$done_file" ]]; then
+        completed="$(head -n 1 "$done_file")"
+        echo "Resuming implementation after step $completed of $total."
+    fi
+
+    local i=0 step prompt
+    while IFS= read -r step; do
+        [[ -n "$step" ]] || continue
+        i=$(( i + 1 ))
+        [[ "$i" -le "$completed" ]] && continue
+
+        prompt="$STATE_DIR/implement-step-$i.md"
+        compose_implementation_prompt "$base" "$prompt"
+
+        {
+            echo
+            echo "## This invocation: step $i of $total"
+            echo
+            echo "$step"
+            echo
+            echo "Implement this step only. The earlier steps are already done"
+            echo "and their code is on disk; IMPLEMENTATION_NOTES.md records"
+            echo "what they changed and why. Read it first. Do not redo, revise"
+            echo "or review their work, and do not start a later step."
+            echo
+            echo "Append your rows to IMPLEMENTATION_NOTES.md; do not rewrite"
+            echo "the rows already there. Run the narrowest test target that"
+            echo "covers this step."
+            if [[ "$i" -eq "$total" ]]; then
+                echo
+                echo "This is the final step. After it, run the full gate from"
+                echo "CHANGE_PLAN.md's automated-test strategy and write"
+                echo "CHANGE_TEST_REPORT.md covering the whole change, not only"
+                echo "this step."
+            else
+                echo
+                echo "Do not run the full suite; the final step does that once."
+            fi
+        } >> "$prompt"
+
+        echo
+        echo "Implementation step $i/$total: ${step:0:70}"
+        run_claude "$prompt" "implementation-step-$i" \
+            "$MODEL_IMPLEMENT" "" "$turns" "$BUDGET_IMPLEMENT"
+
+        printf '%s\n' "$i" > "$done_file"
+    done < "$steps_file"
+
+    rm -f "$done_file"
 }
 
 run_claude() {
@@ -880,10 +1082,20 @@ while true; do
                     "$CODEX_EFFORT_CHECKLIST"
             fi
 
-            run_claude prompts/change/implement-change.md implementation \
-                "$MODEL_IMPLEMENT" "" 200 "$BUDGET_IMPLEMENT"
+            if [[ "$STEPWISE_IMPLEMENT" == "1" ]]; then
+                run_stepwise_implementation prompts/change/implement-change.md
+            else
+                compose_implementation_prompt \
+                    prompts/change/implement-change.md \
+                    "$STATE_DIR/implement-change.resolved.md"
+
+                run_claude "$STATE_DIR/implement-change.resolved.md" implementation \
+                    "$MODEL_IMPLEMENT" "" 200 "$BUDGET_IMPLEMENT"
+            fi
             require_file IMPLEMENTATION_NOTES.md
             require_file CHANGE_TEST_REPORT.md
+
+            check_scope_deviations
 
             git diff --check
             git diff --stat > "$STATE_DIR/change-stat.txt"

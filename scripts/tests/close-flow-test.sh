@@ -810,6 +810,46 @@ else
     fi
 fi
 
+# --- state/origin agreement across a completed run -------------------------
+#
+# Seeding a new issue writes .workflow/origin and leaves the finished run's
+# .workflow/state behind. Treating that as corruption made a checkout
+# single-use: the second issue could not start without deleting files by hand.
+
+CASE_NAME="state_origin_agree"
+SOTMP="$TMP/state-origin"
+mkdir -p "$SOTMP"
+( . "$ROOT/scripts/lib/state.sh"; . "$ROOT/scripts/lib/issue-close.sh"
+  printf 'o/r\t6\tgh\n' > "$SOTMP/origin"
+
+  agree() { state_origin_agree "$SOTMP/state" "$SOTMP/origin" >/dev/null 2>&1; }
+
+  printf '5:COMPLETE\n' > "$SOTMP/state"
+  agree || echo "FAILCASE a finished run of another issue must not block a new one"
+
+  printf '5:IMPLEMENT\n' > "$SOTMP/state"
+  agree && echo "FAILCASE an unfinished run of another issue must still refuse"
+
+  printf '6:IMPLEMENT\n' > "$SOTMP/state"
+  agree || echo "FAILCASE the same issue in flight must be allowed"
+
+  printf '6:COMPLETE\n' > "$SOTMP/state"
+  agree || echo "FAILCASE the same issue complete must be allowed"
+
+  printf 'COMPLETE\n' > "$SOTMP/state"
+  agree || echo "FAILCASE a legacy unprefixed token has no issue to disagree with"
+
+  : > "$SOTMP/state"
+  agree || echo "FAILCASE an empty state file must be allowed"
+) > "$SOTMP/out" 2>&1
+
+while IFS= read -r line; do
+    case "$line" in
+        FAILCASE*) COUNT=$((COUNT + 1)); fail "${line#FAILCASE }" ;;
+    esac
+done < "$SOTMP/out"
+COUNT=$((COUNT + 6))
+
 if [[ "$FAILED" -ne 0 ]]; then
     echo "close-flow-test.sh: $FAILED of $COUNT checks failed"
     exit 1

@@ -192,11 +192,44 @@ under "Configuration". The two that decide which external CLI is spawned:
 
 | Variable | Default | Used by |
 |---|---|---|
+| `WORKFLOW_STEPWISE_IMPLEMENT` | `0` | `change-workflow.sh` |
 | `WORKFLOW_AGENT_CMD` | `scripts/agent-kimi.sh` | `stagegate.sh`, `change-workflow.sh` |
 | `WORKFLOW_REVIEWER_CMD` | `codex` | both drivers and both `codex-*` helpers |
 
 Setting both to `false` is a convenient way to exercise the argument-handling
 paths without spawning a real agent.
+
+### Frozen scope and stepwise implementation
+
+`scripts/lib/plan-scope.sh` reads the two machine-usable structures out of
+`CHANGE_PLAN.md`: the file list in the change-impact table, and the ordered
+steps in the implementation sequence.
+
+The driver uses the file list twice. It appends it to the implementation
+prompt, so the stage opens the named files instead of searching for the change
+surface; and it checks the diff against it afterwards. Changing a file the plan
+did not name is allowed — a review disposition routinely requires it — but it
+must be named in `IMPLEMENTATION_NOTES.md` with a reason, which the workflow
+already required and did not enforce. An unrecorded one fails the stage.
+
+A plan with no change-impact table is a warning, not a failure: the scope is
+unknown rather than empty, and failing every file would punish plan formatting
+rather than scope creep.
+
+`WORKFLOW_STEPWISE_IMPLEMENT=1` runs implementation as one invocation per step
+of the sequence, each starting cold, instead of one run of up to 200 turns.
+Nothing is evicted from a context, so cost is turns x context and the last
+turns of a long run are the most expensive tokens in the pipeline. Splitting
+resets the accumulated tool output at each step; the plan is re-read per step,
+so the fixed part is paid N times while the growing part is paid once per step.
+`IMPLEMENTATION_NOTES.md` and the code on disk are the handoff between steps.
+
+The turn cap is divided across the steps rather than multiplied, and
+`.workflow/implement-step-done` makes a partial run resumable. It is off by
+default: it changes how the most consequential stage runs, and a step boundary
+in the wrong place costs coherence, which is worth more than tokens.
+
+Covered by `scripts/tests/plan-scope-test.sh`.
 
 ### agent-kimi.sh
 

@@ -54,12 +54,13 @@ issue_close_timeout_cmd() {
 
 # state_origin_agree <state_file> <origin_file>
 #
-# 0 when the state file's issue prefix and .workflow/origin's issue agree, or
-# when either is absent. Non-zero, with the reason printed, when they disagree:
-# normal operation cannot produce that combination, so it is treated as
-# corruption rather than silently resolved in either file's favour.
+# 0 when the state file's issue prefix and .workflow/origin's issue agree, when
+# either is absent, or when the state names a *finished* run of another issue.
+# Non-zero, with the reason printed, when an unfinished run disagrees: normal
+# operation cannot produce that combination, so it is treated as corruption
+# rather than silently resolved in either file's favour.
 state_origin_agree() {
-    local state_file="$1" origin_file="$2" prefix origin_issue
+    local state_file="$1" origin_file="$2" prefix origin_issue stage
 
     prefix="$(state_issue "$state_file")"
     if [[ -z "$prefix" ]]; then
@@ -68,6 +69,16 @@ state_origin_agree() {
 
     origin_issue="$(origin_field "$origin_file" 2)"
     if [[ -z "$origin_issue" || "$prefix" == "$origin_issue" ]]; then
+        return 0
+    fi
+
+    # A COMPLETE state is the residue of a run that finished, not a hand edit.
+    # Seeding the next issue writes .workflow/origin and leaves that residue
+    # behind, so refusing here would make every checkout single-use: the second
+    # issue could never start without deleting files by hand. The caller rebinds
+    # the state to this issue instead.
+    stage="$(state_read "$state_file")"
+    if [[ "$stage" == "COMPLETE" ]]; then
         return 0
     fi
 
