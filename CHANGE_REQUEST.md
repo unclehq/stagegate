@@ -1,6 +1,6 @@
 # Change Request
 
-Seeded from [unclehq/stagegate#3](https://github.com/unclehq/stagegate/issues/3).
+Seeded from [unclehq/stagegate#4](https://github.com/unclehq/stagegate/issues/4).
 
 ## Change Type
 
@@ -8,18 +8,19 @@ Feature | Bug Fix | Prototype | Refactor | Performance | Security | Upgrade
 
 ## Summary
 
-change everything to use opus
+change to Y/N
 
 ## Motivation
 
-change all scripts to use kimi in the place of claude sonnet and claude opus. Kimi is a lot cheaper.
+Instead of the user typing in 
 
-Change .workflow/state to prepend the issue number before the state
-If scripts/from-issue.sh is run and the issue number in .workflow/state is not the same zero out .workflow/state so we can then run scripts/change-workflow.sh and it will complete properly 
+ACKNOWLEDGE
 
-When the change-workflow.sh is complete have it close the issue if it came from a github issue
+or 
 
-Make sure to remove .workflow/lock/lock when chnage-workflow.sh completes 
+APPROVE
+
+put in a Y/N question where a user just types in y or n. Make that whole line bold
 
 ## Observed Current Behavior
 

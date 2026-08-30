@@ -70,6 +70,8 @@ prompt="$(cat)"
 # the drivers render, drop meta and tool results, and pass non-JSON lines
 # through so startup errors stay visible in the log.
 # bash 3.2 under `set -u` errors on "${arr[@]}" when arr is empty.
+start="$SECONDS"
+set +e
 "$KIMI_CMD" -p "$prompt" -m "$resolved" --output-format stream-json \
     ${kimi_args[@]+"${kimi_args[@]}"} \
     | jq -R -r --unbuffered '
@@ -82,3 +84,39 @@ prompt="$(cat)"
               {type: "assistant", message: {content: [$e.tool_calls[] | {type: "tool_use", name: .function.name}]}} | tojson
           else empty end
       '
+# Capture the whole array in one command: any assignment resets PIPESTATUS,
+# so reading element 0 first would leave element 1 unset (fatal under `set -u`).
+kimi_pipe=( "${PIPESTATUS[@]}" )
+set -e
+
+kimi_status="${kimi_pipe[0]}"
+jq_status="${kimi_pipe[1]}"
+
+status=0
+if [[ "$kimi_status" -ne 0 ]]; then
+    status="$kimi_status"
+elif [[ "$jq_status" -ne 0 ]]; then
+    status="$jq_status"
+fi
+
+# Close the stream the way the drivers require. A missing `result` event is
+# read as stage failure, and rightly so for claude: a budget breach or a
+# turn-limit stop exits 0 and confesses only inside that event, so its absence
+# cannot be taken for success. kimi never emits one, which made every kimi
+# stage fail no matter how well it went. Synthesizing it here keeps the check
+# meaningful for claude instead of relaxing it for both.
+#
+# kimi reports neither a turn count nor a spend figure, so those fields are
+# zero rather than invented; the ledger already reads them with `// 0`.
+if [[ "$status" -eq 0 ]]; then
+    subtype="success"
+    is_error="false"
+else
+    subtype="error_during_execution"
+    is_error="true"
+fi
+
+printf '{"type":"result","subtype":"%s","is_error":%s,"num_turns":0,"duration_ms":%d,"total_cost_usd":0}\n' \
+    "$subtype" "$is_error" "$(( (SECONDS - start) * 1000 ))"
+
+exit "$status"

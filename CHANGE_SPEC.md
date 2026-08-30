@@ -1,176 +1,113 @@
 # Change Spec
 
-Omitted sections: Migration requirements (no data migration, only file-format and script edits); Prototype-isolation requirements (no prototype requested)
+Omitted sections: Performance requirements (no performance-sensitive behavior); Prototype-isolation requirements (not a prototype).
 
 ## 1. Change type
 
-Bundle of 5 independent sub-changes: Config default (A), Data format (B),
-Safety-mechanism policy (C), Feature/bug fix (D), Verification-only (E, no
-code change expected). Per BASELINE_REPORT.md §16, tracked here as separate
-items so each can be approved/rejected independently rather than as one
-atomic change.
+Feature — interactive UX improvement.
 
 ## 2. Problem statement
 
-`CHANGE_REQUEST.md` (from `unclehq/stagegate#3`) bundles 5 asks, one of which
-(A) is internally self-contradictory and one of which (C) conflicts with a
-deliberately-designed existing safety invariant (I-5). This spec resolves what
-can be resolved from the text as written and marks the rest UNRESOLVED,
-per baseline §15-16.
+The human gates in `change-workflow.sh`, `stagegate.sh`, and `scripts/workflow.sh` force the operator to type the full uppercase words `APPROVE` or `ACKNOWLEDGE` (BASELINE B-1, B-2, B-3, B-7). This is slow, error-prone, and inconsistent with a simple yes/no decision.
 
 ## 3. Current behavior
 
-See BASELINE_REPORT.md §4 (B-1 through B-9) and §6. Not restated here.
+- `change-workflow.sh` `human_gate` asks for `APPROVE`/`ACKNOWLEDGE` verbatim (BASELINE B-1, B-7).
+- `stagegate.sh` `review_and_approve` asks for its configured wording verbatim (BASELINE B-2, B-7).
+- `scripts/workflow.sh` `approve_*` asks for `APPROVE` verbatim and exits 1 on mismatch (BASELINE B-3, B-7, I-4).
+- Accepted gates still record a SHA-256 approval hash (BASELINE B-5, I-2).
+- `stagegate.sh` rechecks the file hash after input and reopens the gate if the file changed (BASELINE B-6, I-3).
+- `from-issue.sh` uses a separate `RUN` confirmation and is not covered by this request (BASELINE B-4).
 
 ## 4. Desired behavior
 
-**A — Model defaults (opus vs. kimi).** UNRESOLVED — see §16. No spec commitment
-until the human picks one interpretation.
-
-**B — Prepend issue number to `.workflow/state`.** Format changes from a bare
-stage token (`IMPLEMENT`) to an issue-number-prefixed token. Exact delimiter/
-grammar is an implementation decision (out of scope for this doc), but the
-spec commits to: (1) every reader/writer in BASELINE_REPORT.md §6/§13 is
-updated in the same change, (2) `.workflow/origin` remains the sole
-authority for origin-match decisions (I-1) — the issue number in `state` is
-informational/redundant, never a second source of truth, so B does not
-weaken I-1.
-
-**C — Zero `.workflow/state` on issue-number mismatch in `from-issue.sh`.**
-Rejected as literally requested (see §16) — auto-zeroing on mismatch
-reopens AR-001 (I-5). Desired behavior instead: `from-issue.sh` continues to
-refuse and exit 1 on mismatch (current B-5 behavior, unchanged), and prints
-guidance naming the exact manual command to clear state, rather than
-clearing it automatically. No invariant is relaxed.
-
-**D — Close issue on `change-workflow.sh` completion.** Extend issue-closing
-(currently only reachable via `from-issue.sh`'s post-run check, B-9) so that
-`change-workflow.sh` itself closes the originating issue when it reaches
-`COMPLETE`, provided `.workflow/origin` is present and the same READY-verdict
-gating in I-3 is met — regardless of whether the run was launched directly
-or via `from-issue.sh`. `from-issue.sh`'s existing post-run check becomes
-redundant/defensive rather than the only path.
-
-**E — Remove `.workflow/lock/lock` on completion.** No literal file named
-`lock` inside `.workflow/lock/` exists today (baseline §15); the whole
-`.workflow/lock/` directory is already removed on every driver-controlled
-exit path (B-8). Desired behavior: unchanged/PRESERVE. Treated as already
-satisfied pending confirmation of what "lock/lock" was meant to name (§16).
+Replace the prompt and acceptance logic in the three affected gate functions with a single bold Y/N question. `y` or `Y` accepts and proceeds; any other input (including `n`, `N`, empty input, or EOF) declines and preserves the existing exit-code contract. Hash recording, edit detection, and all other gate semantics remain unchanged.
 
 ## 5. Acceptance criteria
 
-| Item | Acceptance criteria |
-|---|---|
-| A | Human has selected exactly one of {all-opus, all-kimi, per-stage-unchanged, other} before any model-default line is edited. Not satisfied until resolved. |
-| B | Every consumer in baseline §6/§13 (`change-workflow.sh`, `stagegate.sh`, `from-issue.sh`, `scripts/workflow.sh`, `close-flow-test.sh` literal fixtures, `README.md`, `QUICK_START.md`) reads/writes the new format consistently; `close-flow-test.sh` passes at 125/125 in a clean shell. |
-| C | `from-issue.sh --change` invoked with mismatched issue number still refuses (exit 1, non-zero state), and I-1/I-5 remain enforced with no regression in `close-flow-test.sh`'s origin-mismatch cases. |
-| D | A `change-workflow.sh` run started directly (no `from-issue.sh`), with `.workflow/origin` present and a READY/READY_WITH_NON_BLOCKING_ISSUES verdict, closes the originating issue by the time the process exits `COMPLETE`; a non-READY verdict does not close it. |
-| E | `.workflow/lock/` (directory and all contents) is absent immediately after any `change-workflow.sh` exit, success or failure — confirmed by re-running the existing lock-release test cases with no new failures. |
+1. Affected gates print one prompt line that is bold, names the action/file being approved, and ends with `[Y/N]`.
+2. Input `y` or `Y` advances the gate and records the approval hash as before.
+3. Input `n`, `N`, any other text, empty input, or EOF declines and preserves the existing exit code (`0` for `change-workflow.sh`/`stagegate.sh`, `1` for `scripts/workflow.sh`).
+4. `stagegate.sh` still detects a file modified during review and reopens the gate instead of recording approval.
+5. `from-issue.sh` `RUN` gate continues to require exact `RUN` and passes `close-flow-test.sh` unchanged.
+6. `README.md`, `QUICK_START.md`, and `scripts/README.md` no longer tell the user to type `APPROVE`/`ACKNOWLEDGE`.
 
 ## 6. Observable behavior table
 
 | ID | Class | Trigger | Current behavior | Expected behavior | Verification |
 |---|---|---|---|---|---|
-| BEH-A | EXPERIMENTAL | Driver run with no model overrides | B-1/B-2 (tiered opus/sonnet) | UNRESOLVED — no change until human resolves opus-vs-kimi contradiction | N/A until resolved |
-| BEH-B | MODIFY | Any stage transition in either driver | B-4 (bare token, no issue number) | State token carries the current issue number in addition to the stage | Updated `close-flow-test.sh` state-format assertions; manual read of `.workflow/state` after a transition |
-| BEH-C | PRESERVE | `from-issue.sh --change` with mismatched (repo, issue) and non-empty/non-`COMPLETE` state | B-5 (refuse, exit 1, state untouched) | Same refusal; message additionally names the manual-clear command | Existing `close-flow-test.sh` `preflight-origin-mismatch`/`preflight-origin-absent` cases continue passing; manual message check |
-| BEH-D | MODIFY | `change-workflow.sh` reaches `COMPLETE` with `.workflow/origin` set and READY verdict, run started directly (not via `from-issue.sh`) | B-9 gap: issue stays open (only `from-issue.sh`'s post-run path closes it) | Issue is closed by `change-workflow.sh` itself before/at exit | New test case mirroring existing `close-flow-test.sh` verdict-record-written / issue-close cases, run without the `from-issue.sh` wrapper |
-| BEH-E | PRESERVE | Any `change-workflow.sh` exit | B-8 (`.workflow/lock/` removed via EXIT trap) | Unchanged | Existing `close-flow-test.sh` lock cases (`lock-held-by-live-pid`, `lock-stale-pid-cleared`) |
+| B-1 | MODIFY | `change-workflow.sh` reaches `human_gate APPROVE`/`ACKNOWLEDGE` | Exact-word prompt; only the matching word accepted (BASELINE B-1, B-7) | Bold Y/N prompt; `y`/`Y` accepts, else declines | Manual/piped gate test; output inspected for bold ANSI and `[Y/N]` |
+| B-2 | MODIFY | `stagegate.sh` reaches `review_and_approve` | Exact-word prompt; only the matching word accepted (BASELINE B-2, B-7) | Bold Y/N prompt; `y`/`Y` accepts, else declines | Manual/piped gate test; output inspected |
+| B-3 | MODIFY | `scripts/workflow.sh approve-plan/review/updated-plan` invoked | Exact-word `APPROVE` prompt; mismatch exits 1 (BASELINE B-3, B-7) | Bold Y/N prompt; `y`/`Y` accepts, else exits 1 | Manual gate test |
+| B-4 | PRESERVE | `from-issue.sh --change` confirms launch | Exact-word `RUN` prompt; mismatch declines (BASELINE B-4) | Exact-word `RUN` prompt; mismatch declines | `close-flow-test.sh` passes unchanged |
+| B-5 | PRESERVE | Any accepted gate | SHA-256 hash written to `.workflow/approvals/<name>.sha256` (BASELINE B-5) | Same hash file written only after `y`/`Y` | Existing suites + manual gate |
+| B-6 | PRESERVE | `stagegate.sh` review with file changed during review | Re-opens gate / cancels speculation (BASELINE B-6) | Same edit detection and reopen behavior | Existing suites + manual test |
+| B-7 | REMOVE | Affected gate prompts | Plain-text exact-word prompt (BASELINE B-7) | Exact-word prompt no longer used | Output inspection |
+| B-8 | PRESERVE | Gate declined in drivers / helper | `change-workflow.sh`/`stagegate.sh` exit 0; `workflow.sh` exits 1 (BASELINE I-4, I-5) | Same exit codes on Y/N decline | Manual test with `n`, `foo`, empty, EOF |
+| B-9 | MODIFY | Gate documentation in `README.md`, `QUICK_START.md`, `scripts/README.md` | Instructs typing `APPROVE`/`ACKNOWLEDGE` | Describes Y/N response | Read docs |
 
 ## 7. Invariant table
 
 | ID | Status | Invariant | Scope | Enforcement point | Verification |
 |---|---|---|---|---|---|
-| INV-1 | EXISTING | A resumed run may not act on `.workflow/state` unless `.workflow/origin` proves it belongs to the current (repo, issue) (=I-1) | Both drivers, `from-issue.sh` | `change-workflow.sh:191-218`, `from-issue.sh:47-67` | `close-flow-test.sh` origin-mismatch cases must keep passing after BEH-B/BEH-C |
-| INV-2 | EXISTING | Only one `change-workflow.sh` may hold a checkout at a time (=I-2) | `change-workflow.sh` | `mkdir` lock, `:147-183` | `close-flow-test.sh` lock cases |
-| INV-3 | STRENGTHENED | The GitHub issue is closed only when the verdict record's run id, origin binding, and `FINAL_AUDIT.md` hash all match the current run (=I-3, extended to fire from inside `change-workflow.sh` per BEH-D, not only from `from-issue.sh`) | Both entry points | `from-issue.sh:132-211` (existing) + new enforcement inside `change-workflow.sh` (BEH-D) | New test case (§6 BEH-D) plus existing `close-flow-test.sh` verdict cases |
-| INV-4 | EXISTING | An approved artifact whose bytes change is re-hashed and rejected (=I-4) | `change-workflow.sh` | `verify_approval` | Not otherwise exercised by this change; no code path here touches it |
-| INV-5 | EXISTING — NOT RELAXED | `.workflow/state` is never auto-deleted to resolve a foreign-owner conflict (=I-5) | `from-issue.sh` preflight | Refuse-not-zero design, `UPDATED_CHANGE_PLAN.md:53` | `close-flow-test.sh` origin-mismatch cases; CR Motivation-C's literal "zero state" ask is REJECTED to keep this invariant intact — see §16 |
-
-No invariant here is RELAXED or REMOVED. INV-5 is explicitly flagged: the
-change request's literal text (Motivation-C) asks for behavior that would
-relax it; this spec rejects that reading rather than relaxing the invariant,
-per baseline §15 and core rule 6/13. If the human wants INV-5 actually
-relaxed, that requires a separate, explicit approval re-opening this
-decision.
+| I-1 | **REMOVED** (affected gates only) | Gate accepts only the exact configured confirmation word. | `change-workflow.sh` `human_gate`, `stagegate.sh` `review_and_approve`, `workflow.sh` `approve_file` | Replaced by Y/N check | Manual test that `APPROVE`/`ACKNOWLEDGE` no longer advances |
+| I-1a | EXISTING | Gate accepts only the exact configured confirmation word. | `from-issue.sh` `confirm_and_run_workflow` | String equality check (BASELINE I-1) | `close-flow-test.sh` |
+| I-2 | EXISTING | Approval records the hash of the file bytes present at acceptance. | All gates that record approvals | `hash_file` after accepted response (BASELINE I-2) | Existing suites + manual gate |
+| I-3 | EXISTING | `stagegate.sh` refuses to approve a file that changed during review. | `stagegate.sh` `review_and_approve` | Before/after hash compare (BASELINE I-3) | Existing suites + manual test |
+| I-4 | EXISTING | `workflow.sh` declines with exit 1 when approval is not given. | `workflow.sh approve_*` | `exit 1` on mismatch (BASELINE I-4) | Manual gate test |
+| I-5 | EXISTING | `change-workflow.sh`/`stagegate.sh` decline with exit 0 when gate not accepted. | Those drivers | `exit 0` on mismatch (BASELINE I-5) | Manual gate test |
+| I-6 | NEW | Affected gates accept only `y`/`Y` as yes; any other input declines. | Affected gates | Y/N acceptance check | Feed `y`, `Y`, `n`, `N`, `foo`, empty, EOF |
+| I-7 | NEW | Prompt line is rendered in bold. | Affected gate prompts | Terminal ANSI formatting | Output contains bold ANSI codes |
+| I-8 | NEW | Prompt states the action/file being approved and offers `[Y/N]`. | Affected gate prompts | Prompt string construction | Output inspection |
 
 ## 8. Compatibility requirements
 
-- BEH-B changes an on-disk file format read by 5+ consumers (baseline §6);
-  all must move together in the same change — no dual-format transition
-  period, since nothing else depends on the old format surviving.
-- `README.md`, `scripts/README.md`, `QUICK_START.md` documented contracts
-  (baseline §6, §13) must be updated in the same change as BEH-B/BEH-D to
-  avoid drift.
+- Exit codes on decline are preserved (I-4, I-5).
+- Approval hash file format and path (`.workflow/approvals/<name>.sha256`) are unchanged (I-2).
+- `.workflow/state`, `.workflow/origin`, `.workflow/audit-verdict`, and `.workflow/lock` contracts are untouched (BASELINE §6).
+- `from-issue.sh` `RUN` gate remains exact-word (B-4).
+- Scripts that previously piped `APPROVE`/`ACKNOWLEDGE` to the affected gates must be updated to pipe `y`/`Y`; this is an intentional UX break.
+- Bold formatting must not corrupt piped/non-TTY input used by tests (BASELINE §13).
 
 ## 9. Error and failure behavior
 
-- BEH-D: if `.workflow/origin` is absent, or the verdict is not
-  READY/READY_WITH_NON_BLOCKING_ISSUES, `change-workflow.sh` must not attempt
-  to close the issue and must not error the run — completion proceeds,
-  closing is simply skipped (mirrors current `from-issue.sh` behavior,
-  `scripts/from-issue.sh:132-211`).
-- BEH-C: refusal path's exit code (1) and untouched-state guarantee are
-  unchanged; only the printed message gains the manual-clear hint.
+- Empty input or EOF at an affected gate is treated as decline, with the preserved exit code.
+- Any text other than `y`/`Y` is treated as decline.
+- If the terminal does not support bold, the prompt must remain readable; no fatal error may be emitted solely because of styling.
+- `stagegate.sh` file-modified-during-review still reopens the gate (B-6).
 
-## 10. Performance requirements
+## 10. Security requirements
 
-None stated or implied; no change here is performance-sensitive.
+- The gate remains a strict human barrier: only `y`/`Y` advances; no hidden or whitespace-trimmed characters may be accepted as yes.
+- Bold ANSI escape sequences must not be written into approval hash files, state files, or logs.
+- No new credentials or secrets are introduced.
 
-## 11. Security requirements
+## 11. Migration requirements
 
-- BEH-D must reuse the existing hash/run-id/origin triple-check (I-3) rather
-  than introduce a second, looser gate for the direct-run path — a weaker
-  duplicate check would let a stale or foreign run close an issue it
-  doesn't own.
+- Update `README.md`, `QUICK_START.md`, and `scripts/README.md` to describe the new Y/N gate response.
+- No data or state migration is required.
 
 ## 12. Rollback expectations
 
-- Each of A/B/C/D/E is independently revertible: B is a file-format change
-  confined to this repo's own scripts/tests/docs (no external consumers
-  identified); D adds a code path but does not remove the existing
-  `from-issue.sh` closing path, so reverting D leaves B-9 behavior intact;
-  C makes no code change (rejects the request); E makes no code change.
+- Revert the source changes to restore exact-word `APPROVE`/`ACKNOWLEDGE` prompts and acceptance.
+- Existing approval hashes remain valid; no state rollback is needed.
 
 ## 13. Explicit non-goals
 
-- Not touching `stagegate.sh`'s new-application-only behavior beyond any
-  shared model/CLI defaults resolved under A (baseline §14).
-- Not implementing literal "zero `.workflow/state` on mismatch" (Motivation-C)
-  — see INV-5 and §16.
-- Not writing a `kimi` CLI wrapper or validating `kimi` flag-compatibility —
-  out of scope until A is resolved.
-- Not modifying `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`,
-  `GOOD_FIRST_ISSUES.md`, `STRATEGY.md`, `AGENTIC.md`, or `prompts/` bodies
-  (baseline §14).
+- Converting `from-issue.sh` `RUN` confirmation to Y/N.
+- Changing the approval hash algorithm or storage path.
+- Changing `.workflow` state/lock/verdict contracts.
+- Modifying `scripts/agent-kimi.sh` or its untracked test file.
+- Adding configuration knobs for prompt wording, case sensitivity, or styling.
+- Supporting languages other than English.
 
 ## 14. Assumptions and unresolved questions
 
-Carried forward from baseline §15, with resolutions/dispositions:
+Assumptions:
 
-1. **A (opus vs. kimi) — UNRESOLVED.** Summary says "everything opus";
-   Motivation-A says "everything kimi." No default-model edit proceeds to
-   CHANGE_PLAN.md until the human states which is meant (or a third option:
-   leave per-stage tiering as-is).
-2. **A — "kimi" drop-in feasibility — UNRESOLVED.** Even once direction is
-   picked, whether `kimi` accepts the same CLI flags as `claude`/`codex`
-   (required per `README.md:258-260`) is unverified; no `kimi` binary
-   available in this environment to test.
-3. **C (zero-state-on-mismatch) — RESOLVED as rejected**, per INV-5/§16:
-   implementing it literally would reopen AR-001. This spec substitutes
-   BEH-C (refuse + better message) as the compliant interpretation of the
-   underlying request ("so `change-workflow.sh` will complete properly" —
-   satisfied by telling the operator how to clear state safely, not by
-   auto-clearing it).
-4. **B (state format) — RESOLVED as additive-safe, format-changing.** The
-   issue number is added to the token consumers already parse; `.workflow/
-   origin` remains the sole trust source for INV-1, so the format change
-   does not itself weaken any invariant. Exact grammar left to CHANGE_PLAN.md
-   (implementation detail).
-5. **E ("lock/lock") — UNRESOLVED naming, RESOLVED behaviorally.** No such
-   file exists; `.workflow/lock/` directory removal already satisfies the
-   apparent intent (B-8). If the human meant a different, currently
-   nonexistent path, this spec does not cover it — needs clarification.
-6. CHANGE_REQUEST.md itself supplies no acceptance criteria, constraints, or
-   out-of-scope list (baseline §1) — §5/§13 above are this document's
-   substitute, subject to human approval.
+- "Bold" means ANSI terminal bold escape codes on the prompt line.
+- Y/N is case-insensitive for yes (`y`/`Y`), and any other response declines.
+- Empty input or EOF is treated as decline.
+- The prompt retains the action/file name for context (e.g., "Approve `<file>`? [Y/N]").
+
+Unresolved questions: none.
