@@ -86,3 +86,13 @@ exercised by MC-004/MC-005) are not documented. `UPDATED_CHANGE_PLAN.md`'s
 compatibility requirements (§8) call for README updates alongside BEH-B/BEH-D;
 this is a gap against that requirement, not a functional defect. MC-026's
 "kill switch, retry, skip guards" content is otherwise present and accurate.
+
+## Gate-prompt verification (2026-08-29)
+
+Independent manual verification of the `APPROVE`/`ACKNOWLEDGE` → bold `Y/N`
+gate-prompt change (`CHANGE_SPEC.md`, `MANUAL_CHECKLIST.md` MC-001 through
+MC-018) found no new defects. All P0/P1 checks passed; automated regression
+suites remained green; the implementation was confined to the six authorized
+paths in `UPDATED_CHANGE_PLAN.md` §23. The existing D-1/D-2 entries above
+concern origin-binding behavior and are outside the scope of this gate-prompt
+verification.

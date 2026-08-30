@@ -1,161 +1,137 @@
 ID: FA-001
-Severity: Critical
-Evidence: `DEFECTS.md:9-74`; `scripts/change-workflow.sh:207-240,272-301`; `scripts/lib/issue-close.sh:130-135`.
-Affected behavior: A `COMPLETE` rerun explicitly bound to `owner/repo#42` can close a stale `.workflow/origin` target such as `other/repo#99`.
-Affected invariant: INV-1 and INV-3.
-Required correction: Cross-check explicit `STAGEGATE_ORIGIN_*` against the on-disk origin before closing, use the explicit binding as the target when present, and add a divergent-env/origin regression test.
+Severity: High
+Evidence: `scripts/stagegate.sh:266-279` writes `before` after the final comparison; `scripts/tests/gate-prompt-test.sh:542-553` mutates after that comparison, expects an approval file containing the now-mismatched digest, and treats this as success; `VERIFICATION_REPORT.md:18` marks MC-007 PASS and incorrectly says no approval was recorded for mutated content.
+Affected behavior: A mutation between validation and recording can leave a stale approval instead of reopening or declining.
+Affected invariant: I-2, I-3, UPDATED_CHANGE_PLAN.md acceptance criterion 6.
+Required correction: Detect mutation through the recording boundary, remove any stale approval and reopen/decline, and change the race test to require no mismatched approval.
 Blocks completion: Yes
 
 ID: FA-002
-Severity: Critical
-Evidence: `.workflow/change.diff:1,178,314,354,416` contains only reports, documentation, and one test file; `IMPLEMENTATION_NOTES.md:21-27` identifies four source files as changed.
-Affected behavior: The authoritative audit input omits the implementation of state parsing and issue closing.
-Affected invariant: Frozen-scope and change-traceability integrity.
-Required correction: Regenerate `.workflow/change.diff` against the approved pre-change baseline so it includes every source, test, and documentation change, then repeat final audit and scope verification.
+Severity: High
+Evidence: The `diff --git` inventory in `.workflow/change.diff` omits `scripts/tests/gate-prompt-test.sh`, although `UPDATED_CHANGE_PLAN.md:298-305` and `IMPLEMENTATION_NOTES.md:8-12` identify it as a new required file; this contradicts the MC-018 PASS at `VERIFICATION_REPORT.md:29`.
+Affected behavior: The authoritative change record does not contain the changed regression suite and cannot support the claimed six-path scope audit.
+Affected invariant: Frozen-scope traceability and authoritative-diff completeness.
+Required correction: Regenerate `.workflow/change.diff` from the correct baseline so it includes every implementation and test change, then repeat the scope audit.
 Blocks completion: Yes
 
 ID: FA-003
 Severity: High
-Evidence: `CHANGE_TEST_REPORT.md:26,58-68` marks security PASS and claims INV-3 is satisfied; `DEFECTS.md:33-49` records an executed wrong-issue close.
-Affected behavior: The security result certifies a close gate that can target an issue not named by the invocation.
-Affected invariant: INV-3.
-Required correction: Change this PASS to FAIL, correct FA-001, and rerun the complete security matrix.
+Evidence: MC-001 requires driving the real `change-workflow.sh` gates and inspecting state (`MANUAL_CHECKLIST.md:10-13`), but `VERIFICATION_REPORT.md:12` used an extracted-function harness; `IMPLEMENTATION_NOTES.md` deviation D-1 confirms this substitution.
+Affected behavior: Real driver integration, state advancement, and all four actual call sites were not executed as claimed.
+Affected invariant: I-2, I-5, I-8.
+Required correction: Execute MC-001 through the real driver at every gate or mark MC-001 NOT RUN.
 Blocks completion: Yes
 
 ID: FA-004
 Severity: High
-Evidence: `VERIFICATION_REPORT.md:28` reports the mismatched-origin fixture as PASS/no-close, while `DEFECTS.md:33-49` reports the same `mc009-originmismatch3` scenario closing `other/repo#99`.
-Affected behavior: MC-009’s origin-mismatch PASS claim contradicts executed evidence.
-Affected invariant: INV-1 and INV-3.
-Required correction: Record MC-009 as FAIL, preserve the reproduction, fix the gate, and rerun the entire fixture matrix.
+Evidence: MC-002 requires real-driver state and downstream-command evidence (`MANUAL_CHECKLIST.md:22-25`), while its PASS at `VERIFICATION_REPORT.md:13` comes from extracted-function sentinels.
+Affected behavior: Decline behavior was not verified with real state dispatch or downstream execution.
+Affected invariant: I-5, I-6.
+Required correction: Run the complete input matrix through representative real `change-workflow.sh` gates and capture state/downstream traces, or mark MC-002 NOT RUN.
 Blocks completion: Yes
 
 ID: FA-005
 Severity: High
-Evidence: `VERIFICATION_REPORT.md:42` marks frozen-scope verification PASS using `git diff HEAD`; `.workflow/change.diff` omits the source changes already present in `HEAD`.
-Affected behavior: Protected-file and unchanged-default assertions were compared against the implemented revision rather than the approved baseline.
-Affected invariant: Frozen change scope.
-Required correction: Reperform MC-024 against the actual pre-change revision or preimplementation hashes and record the complete path-limited diff.
+Evidence: MC-003 requires independently driving all four real `stagegate.sh` gates (`MANUAL_CHECKLIST.md:34-37`), but `VERIFICATION_REPORT.md:14` reports only extracted-function harness executions.
+Affected behavior: Real caller transitions and approval mapping at all stagegate call sites remain unverified.
+Affected invariant: I-2, I-3, I-8.
+Required correction: Execute all four call sites through the real driver or mark MC-003 NOT RUN.
 Blocks completion: Yes
 
 ID: FA-006
 Severity: High
-Evidence: `VERIFICATION_REPORT.md:24` marks MC-005 PASS after invoking only the sourced seed gate; `CHANGE_PLAN.md:253` requires `from-issue.sh --change` and `UPDATED_CHANGE_PLAN.md:380` requires MV-1–MV-8 to be executed.
-Affected behavior: The full mismatch-refusal entry point, including its no-seed/no-dispatch effects, was not manually exercised.
-Affected invariant: INV-1 and INV-5.
-Required correction: Execute MV-3 through the real CLI in a disposable checkout and capture exit status, unchanged hashes, output, and absence of downstream calls.
+Evidence: MC-004 requires real workflow state and downstream-command traces (`MANUAL_CHECKLIST.md:46-49`), but `VERIFICATION_REPORT.md:15` bases PASS on an extracted representative function.
+Affected behavior: Real-driver decline and EOF behavior is not established.
+Affected invariant: I-3, I-5, I-6.
+Required correction: Execute the MC-004 matrix through a real stagegate gate and retain the required evidence, or mark it NOT RUN.
 Blocks completion: Yes
 
 ID: FA-007
 Severity: High
-Evidence: `VERIFICATION_REPORT.md:6-11,26` marks MC-007 PASS with stubbed `gh`; `CHANGE_PLAN.md:254` requires a direct READY run against a disposable issue with authenticated `gh`.
-Affected behavior: Actual GitHub closure and marker behavior were not verified end to end.
-Affected invariant: INV-3.
-Required correction: Run authorized MV-4 against a disposable issue or record it as NOT RUN; do not count the stubbed fixture as the required manual PASS.
+Evidence: `VERIFICATION_REPORT.md:16` claims all three `workflow.sh` subcommands accepted both `y` and `Y`; the automated suite tests both cases only for `approve-plan` (`scripts/tests/gate-prompt-test.sh:260-267`) and tests the other subcommands only with lowercase `y` (`:296-306`).
+Affected behavior: Uppercase acceptance and approval mapping for `approve-review` and `approve-updated-plan` are unsupported.
+Affected invariant: I-2, I-6, I-8.
+Required correction: Execute and retain distinct uppercase-`Y` evidence for every subcommand, or narrow MC-005 to the cases actually run.
 Blocks completion: Yes
 
 ID: FA-008
 Severity: High
-Evidence: `VERIFICATION_REPORT.md:29` marks MC-010 PASS from an unprefixed `FINAL_AUDIT` fixture; `UPDATED_CHANGE_PLAN.md:220,380` requires MV-7 with cleared state and a fresh direct run.
-Affected behavior: The specified fresh-run stale-origin path was not executed from empty state.
-Affected invariant: INV-1 and INV-3.
-Required correction: Execute MV-7 exactly from cleared state through completion and capture the close log and marker absence.
+Evidence: `VERIFICATION_REPORT.md:17` claims the complete decline matrix ran for every `workflow.sh` subcommand; `scripts/tests/gate-prompt-test.sh:274-294` applies that matrix only to `approve-plan`, while `:296-306` only accepts lowercase `y` for the other subcommands.
+Affected behavior: Decline, EOF, legacy-word, and uppercase-input behavior is unsupported for two subcommands.
+Affected invariant: I-4, I-6.
+Required correction: Run the full matrix for all three subcommands or mark the unsupported portions of MC-006 NOT RUN.
 Blocks completion: Yes
 
 ID: FA-009
-Severity: High
-Evidence: `VERIFICATION_REPORT.md:32` marks MC-013 PASS while admitting no real curl fetch or issue was exercised; `UPDATED_CHANGE_PLAN.md:221,380` requires forcing curl fallback for a real disposable issue.
-Affected behavior: Fetch provenance across the real `from-issue.sh` → driver chain remains unverified.
-Affected invariant: INV-3.
-Required correction: Execute authorized MV-8 end to end or mark it NOT RUN.
+Severity: Medium
+Evidence: `scripts/tests/gate-prompt-test.sh:2,22-23,139-145` does not abort when `mktemp -d` fails; an empty `TMP` makes cases resolve to root paths such as `/g1-accept-y`, causing attempted root-level writes.
+Affected behavior: The supposedly hermetic test can write outside its scratch directory on a privileged or misconfigured runner.
+Affected invariant: Test isolation and safe failure behavior.
+Required correction: Fail immediately when scratch-directory creation fails and validate that the resolved case path is beneath the nonempty scratch directory.
 Blocks completion: Yes
 
 ID: FA-010
-Severity: High
-Evidence: `VERIFICATION_REPORT.md:39` marks MC-020 PASS for SIGINT cleanup; the recorded MC-020 scenario in `.workflow/logs/execute-checklist.jsonl` omitted `CHANGE_REQUEST.md`, allowing the driver to exit before the signal without proving the lock was held.
-Affected behavior: Lock cleanup after an actual interrupted in-flight run is unsupported.
-Affected invariant: INV-2 and BEH-E.
-Required correction: Hold the driver in a confirmed post-lock stage, verify the lock exists, send SIGINT, wait for exit, and verify the whole lock directory is removed.
+Severity: Medium
+Evidence: MC-010 is marked PASS at `VERIFICATION_REPORT.md:21`, but `scripts/README.md:45-61` contains no Y/N contract; this misses B-9 and CHANGE_SPEC.md:85-88, while `scripts/README.md:78` also contradicts UPDATED_CHANGE_PLAN.md:363-365’s unqualified `exact word` prohibition.
+Affected behavior: One required user-facing document does not describe the new gate response, and the approved criterion conflicts with the preserved RUN documentation.
+Affected invariant: Documentation/migration consistency.
+Required correction: Document `y`/`Y` behavior for affected gates in `scripts/README.md` and revise criterion 9 to explicitly exempt the preserved RUN gate.
 Blocks completion: Yes
 
 ID: FA-011
 Severity: Medium
-Evidence: `CHANGE_TEST_REPORT.md:23` calls a fresh `git archive HEAD` baseline-suite run a rollback PASS; it does not revert a migrated checkout or resume from prefixed state as required by `MANUAL_CHECKLIST.md:305-315`.
-Affected behavior: Rollback compatibility with persisted prefixed state and the legacy wrapper is unverified.
-Affected invariant: Rollback expectations for BEH-B and BEH-D.
-Required correction: Revert a disposable implemented checkout, rewrite prefixed state as documented, and verify legacy resume and close behavior.
-Blocks completion: No
+Evidence: MC-012 requires a restart after acceptance (`MANUAL_CHECKLIST.md:142-145`), but `/tmp/stagegate-verify/resume.sh` runs only one decline followed by one acceptance and performs no post-accept restart; `VERIFICATION_REPORT.md:23` nevertheless marks PASS.
+Affected behavior: Re-entry after an accepted gate remains unverified.
+Affected invariant: State-transition idempotency and resumability.
+Required correction: Perform the required post-accept restart for all affected workflows and capture resulting state, or mark MC-012 NOT RUN.
+Blocks completion: Yes
 
 ID: FA-012
 Severity: Medium
-Evidence: `VERIFICATION_REPORT.md:45` marks MC-027 PASS while explicitly citing the prior rollback result instead of rerunning the state rewrite and legacy-wrapper resume required by `MANUAL_CHECKLIST.md:305-315`.
-Affected behavior: Verification overstates rollback coverage.
-Affected invariant: Rollback evidence integrity.
-Required correction: Execute the complete MC-027 procedure or change its status to NOT RUN.
-Blocks completion: No
+Evidence: MC-015 requires reverting the isolated release unit and testing all affected scripts and documentation (`MANUAL_CHECKLIST.md:178-181`); `/tmp/stagegate-verify/rollback.sh` merely extracts five parent versions and exercises only `workflow.sh`, while `CHANGE_TEST_REPORT.md` explicitly records the rollback test as NOT RUN.
+Affected behavior: Full rollback of both drivers, documentation, and the new test is not verified.
+Affected invariant: Rollback completeness and preservation of unrelated work.
+Required correction: Perform the planned isolated revert and verify all three gates, docs, test removal, RUN preservation, and unrelated-file status.
+Blocks completion: Yes
 
 ID: FA-013
 Severity: Medium
-Evidence: `VERIFICATION_REPORT.md:20` marks MC-001 PASS with partial evidence from only ANALYZE, FINAL_AUDIT, and COMPLETE; `MANUAL_CHECKLIST.md:5-15` requires every transition in the ordered state sequence.
-Affected behavior: Intermediate stage ordering and prefixed writes were not executed.
-Affected invariant: BEH-B and INV-1.
-Required correction: Exercise and record every named transition or mark MC-001 partial/NOT RUN.
-Blocks completion: No
+Evidence: MC-017 requires end-to-end runs of both drivers (`MANUAL_CHECKLIST.md:202-205`), but `VERIFICATION_REPORT.md:28` reports only a real `stagegate.sh` run.
+Affected behavior: `change-workflow.sh` gate integration with preflight, locking, state dispatch, and resumption lacks end-to-end coverage.
+Affected invariant: I-2, I-5 and real-driver integration.
+Required correction: Add the missing end-to-end `change-workflow.sh` execution or mark MC-017 partial/NOT RUN.
+Blocks completion: Yes
 
 ID: FA-014
 Severity: Medium
-Evidence: `VERIFICATION_REPORT.md:21` marks MC-002 PASS after testing only ANALYZE, FINAL_AUDIT, and COMPLETE; `MANUAL_CHECKLIST.md:17-27` requires every legacy bare stage token.
-Affected behavior: Backward compatibility for PLAN, UPDATED_PLAN, IMPLEMENT, CHECKLIST, and EXECUTE_CHECKLIST lacks executed evidence.
-Affected invariant: BEH-B legacy-state compatibility.
-Required correction: Run every bare-token fixture and record dispatch, exit status, and resulting state.
-Blocks completion: No
+Evidence: MC-008 requires scans of approval, state, and project-log files (`MANUAL_CHECKLIST.md:94-97`), but `/tmp/stagegate-verify/style.sh` inspects only captured stdout; `VERIFICATION_REPORT.md:19` marks the whole check PASS.
+Affected behavior: The claim that ANSI never enters persisted artifacts or project logs lacks executed evidence.
+Affected invariant: I-7 and CHANGE_SPEC.md security requirement at lines 79-83.
+Required correction: Scan the specified persisted artifacts and logs in each mode, or narrow MC-008 and mark the omitted checks NOT RUN.
+Blocks completion: Yes
 
 ID: FA-015
 Severity: Medium
-Evidence: `VERIFICATION_REPORT.md:41` marks MC-022 PASS using an “isolated re-implementation” of `verify_approval`, rather than executing the repository function.
-Affected behavior: Approved-artifact tamper rejection is not tied to execution of the shipped code.
-Affected invariant: INV-4.
-Required correction: Exercise the real driver/function against a mutated approved artifact or mark this portion NOT RUN.
+Evidence: MC-013 requires filesystem and approval/state/log corruption scans (`MANUAL_CHECKLIST.md:149-157`), while `/tmp/stagegate-verify/strict.sh` records only exit codes and approval-file counts; `VERIFICATION_REPORT.md:24` marks PASS.
+Affected behavior: Non-persistence and corruption claims for hostile/control-byte inputs are unsupported.
+Affected invariant: I-2, I-6.
+Required correction: Capture the required filesystem diff and byte-level state/log scans, or limit the reported PASS to strict input rejection.
 Blocks completion: No
 
 ID: FA-016
 Severity: Medium
-Evidence: `VERIFICATION_REPORT.md:43` marks MC-025 PASS while admitting a reused reason string; `UPDATED_CHANGE_PLAN.md:225-227,401-403` requires every new guard reason to be distinct.
-Affected behavior: The provenance guard does not meet the approved observability requirement.
-Affected invariant: Close-gate diagnostic traceability.
-Required correction: Add a distinct message or obtain approval for the documented deviation, then update and rerun assertions.
+Evidence: MC-014 requires baseline/release comparisons for every affected script and all listed records (`MANUAL_CHECKLIST.md:166-169`), but `/tmp/stagegate-verify/observability.sh` exercises only `workflow.sh` and lists `.workflow`; `VERIFICATION_REPORT.md:25` marks the complete check PASS.
+Affected behavior: Claims that spend, cost, lock, origin, verdict, and project-log behavior are unchanged in both drivers are unsupported.
+Affected invariant: Unchanged observability and persistence contracts.
+Required correction: Perform the full three-script comparison or mark the unexecuted portions NOT RUN.
 Blocks completion: No
 
 ID: FA-017
 Severity: Medium
-Evidence: `VERIFICATION_REPORT.md:44` marks MC-026 PASS while reporting missing documentation; `DEFECTS.md:76-88` identifies absent `STAGEGATE_CLOSE_TIMEOUT` and exact corruption/manual-clear guidance.
-Affected behavior: User documentation does not fully describe the new configuration and recovery contract.
-Affected invariant: Compatibility/documentation requirements for BEH-B and BEH-D.
-Required correction: Document the timeout variable and exact corruption-recovery procedure, then repeat MC-026.
-Blocks completion: No
-
-ID: FA-018
-Severity: Medium
-Evidence: `VERIFICATION_REPORT.md:49` marks MC-031 PASS; the MC-031 command in `.workflow/logs/execute-checklist.jsonl` redefined `write_origin()` inline instead of invoking the shipped driver implementation.
-Affected behavior: Provenance preservation and foreign-origin rewrite semantics are not tied to executed production code.
-Affected invariant: INV-1 and INV-3.
-Required correction: Exercise the actual `change-workflow.sh` path through `write_origin` for all three fixtures.
-Blocks completion: No
-
-ID: FA-019
-Severity: Medium
-Evidence: `VERIFICATION_REPORT.md:52` marks MC-034 PASS after testing only `--help`; `MANUAL_CHECKLIST.md:389-399` also requires a valid disposable `--change` invocation and deployment-environment inspection.
-Affected behavior: The test-only source-mode hook’s production CLI and environmental-leakage risks remain unverified.
-Affected invariant: Frozen command interface.
-Required correction: Complete the valid `--change` matrix and confirm production launch environments do not set the hook, or mark MC-034 partial.
-Blocks completion: No
-
-ID: FA-020
-Severity: Medium
-Evidence: `VERIFICATION_REPORT.md:54` marks MC-036 PASS using only static diff and grep; `MANUAL_CHECKLIST.md:413-423` requires a controlled `stagegate.sh` transition and resume.
-Affected behavior: Runtime compatibility of the unchanged driver beside the new state grammar was not executed.
-Affected invariant: Frozen scope and legacy stagegate behavior.
-Required correction: Run the specified transition/resume comparison or change MC-036 to NOT RUN.
+Evidence: MC-016 requires both exit-status-only and output-aware wrappers (`MANUAL_CHECKLIST.md:190-193`), but `/tmp/stagegate-verify/wrapper-aware.sh` and `VERIFICATION_REPORT.md:27` exercise only output-aware wrappers.
+Affected behavior: The known silent-success behavior of legacy exit-status-only wrappers was not executed or reported by the claimed PASS.
+Affected invariant: Compatibility and migration transparency.
+Required correction: Run the exit-status-only wrapper cases and record their downstream behavior, or mark MC-016 partial while retaining the documented compatibility risk.
 Blocks completion: No
 
 NOT READY
