@@ -169,6 +169,7 @@ legacy_word_notice() {
 # .workflow/state grammar, and the shared INV-3 close gate.
 . "$ROOT/scripts/lib/state.sh"
 . "$ROOT/scripts/lib/plan-scope.sh"
+. "$ROOT/scripts/lib/progress.sh"
 . "$ROOT/scripts/lib/issue-close.sh"
 
 require_file() {
@@ -688,6 +689,45 @@ run_stepwise_implementation() {
     rm -f "$done_file"
 }
 
+# Count checks as they stream past and drive the pinned status line.
+#
+# The denominator is the distinct MC ids in MANUAL_CHECKLIST.md; the numerator
+# is the distinct ids seen in the stage's own output. That is a progress
+# estimate, not a completion record: an id counts the first time the stage
+# mentions it, which may be when it starts a check rather than when it
+# finishes. VERIFICATION_REPORT.md remains the only authority on what actually
+# ran. Lines pass through untouched, so the log is unchanged.
+progress_tap() {
+    local total="$1" label="$2"
+    local seen="" count=0 line id
+
+    if [[ "$total" -le 0 ]]; then
+        cat
+        return 0
+    fi
+
+    progress_begin
+    progress_update 0 "$total" "$label"
+    while IFS= read -r line; do
+        printf '%s\n' "$line"
+        case "$line" in
+            *MC-*)
+                for id in $(printf '%s' "$line" | grep -oE 'MC-[0-9]+' | sort -u); do
+                    case " $seen " in
+                        *" $id "*) ;;
+                        *)
+                            seen="$seen $id"
+                            count=$(( count + 1 ))
+                            progress_update "$count" "$total" "$label"
+                            ;;
+                    esac
+                done
+                ;;
+        esac
+    done
+    progress_end
+}
+
 run_claude() {
     local prompt_file="$1"
     local log_name="$2"
@@ -744,7 +784,9 @@ run_claude() {
         < "$prompt_file" \
         2>&1 \
         | tee "$LOG_DIR/${log_name}.jsonl" \
+        | progress_tap "${PROGRESS_TOTAL:-0}" "${PROGRESS_LABEL:-stage}" \
         | format_claude_stream || status=$?
+    progress_end
 
     local elapsed="$((SECONDS - start))"
     local log="$LOG_DIR/${log_name}.jsonl"
@@ -864,7 +906,7 @@ cleanup_bg() {
         wait "$BG_PID" 2>/dev/null || true
     fi
 }
-trap cleanup_bg EXIT
+trap 'progress_end; cleanup_bg' EXIT
 
 start_codex_bg() {
     local prompt_file="$1"
@@ -1127,8 +1169,12 @@ while true; do
             ;;
 
         EXECUTE_CHECKLIST)
+            PROGRESS_TOTAL="$(grep -oE 'MC-[0-9]+' MANUAL_CHECKLIST.md 2>/dev/null \
+                | sort -u | grep -c . || echo 0)"
+            PROGRESS_LABEL="checklist"
             run_claude prompts/change/execute-change-checklist.md execute-checklist \
                 "$MODEL_EXECUTE" "$EFFORT_EXECUTE" 200 "$BUDGET_EXECUTE"
+            PROGRESS_TOTAL=0
             require_file VERIFICATION_REPORT.md
             set_state FINAL_AUDIT
             ;;

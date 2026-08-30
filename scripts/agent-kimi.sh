@@ -70,11 +70,67 @@ prompt="$(cat)"
 # the drivers render, drop meta and tool results, and pass non-JSON lines
 # through so startup errors stay visible in the log.
 # bash 3.2 under `set -u` errors on "${arr[@]}" when arr is empty.
+# Stall guard. kimi talks to a remote API; a connection can go established but
+# silent, and the process then sits in a socket read at 0% CPU forever. The
+# drivers cannot catch that: this shim drops --max-turns and --max-budget-usd
+# because kimi does not accept them, so a stalled stage has no cap of any kind
+# and parks the pipeline indefinitely.
+#
+# The bound is on *silence*, not on total runtime. EXECUTE_CHECKLIST legitimately
+# runs for many minutes, so a wall-clock cap would kill healthy stages; a stage
+# that has produced no output at all for this long is not working.
+IDLE_TIMEOUT="${WORKFLOW_KIMI_IDLE_TIMEOUT:-300}"
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+fifo="$work/stream"
+beat="$work/heartbeat"
+mkfifo "$fifo"
+: > "$beat"
+
+mtime_of() {
+    stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0
+}
+
 start="$SECONDS"
 set +e
+
+# Job control gives the background job its own process group, so the watchdog
+# can signal the whole tree. Killing only kimi leaves its children holding the
+# fifo's write end open, and the reader below then blocks on a stream that will
+# never reach EOF -- a different hang in place of the one being fixed.
+set -m
 "$KIMI_CMD" -p "$prompt" -m "$resolved" --output-format stream-json \
-    ${kimi_args[@]+"${kimi_args[@]}"} \
-    | jq -R -r --unbuffered '
+    ${kimi_args[@]+"${kimi_args[@]}"} > "$fifo" 2>&1 &
+kimi_pid=$!
+set +m
+
+# Watchdog: kill kimi once the stream has been quiet for IDLE_TIMEOUT. It exits
+# on its own when kimi does, so a healthy run leaves nothing behind.
+(
+    while kill -0 "$kimi_pid" 2>/dev/null; do
+        sleep 10
+        kill -0 "$kimi_pid" 2>/dev/null || break
+        quiet=$(( $(date +%s) - $(mtime_of "$beat") ))
+        if [[ "$quiet" -ge "$IDLE_TIMEOUT" ]]; then
+            echo "agent-kimi.sh: no output for ${quiet}s (limit ${IDLE_TIMEOUT}s); stopping kimi." >&2
+            kill -TERM -"$kimi_pid" 2>/dev/null || kill -TERM "$kimi_pid" 2>/dev/null
+            sleep 5
+            kill -KILL -"$kimi_pid" 2>/dev/null || kill -KILL "$kimi_pid" 2>/dev/null
+            break
+        fi
+    done
+) &
+watchdog_pid=$!
+
+# The reader marks the heartbeat per line, so "quiet" means the stream is quiet
+# rather than the process merely being slow between tokens.
+{
+    while IFS= read -r -t "$(( IDLE_TIMEOUT + 30 ))" line; do
+        printf '%s\n' "$line"
+        : > "$beat"
+    done < "$fifo"
+} | jq -R -r --unbuffered '
         . as $line
         | (fromjson? // null) as $e
         | if $e == null then $line
@@ -84,13 +140,19 @@ set +e
               {type: "assistant", message: {content: [$e.tool_calls[] | {type: "tool_use", name: .function.name}]}} | tojson
           else empty end
       '
-# Capture the whole array in one command: any assignment resets PIPESTATUS,
-# so reading element 0 first would leave element 1 unset (fatal under `set -u`).
-kimi_pipe=( "${PIPESTATUS[@]}" )
+# The reader/jq pipeline is what just finished; kimi is the background job.
+jq_status="${PIPESTATUS[1]}"
+wait "$kimi_pid"
+kimi_status=$?
+kill "$watchdog_pid" 2>/dev/null
+wait "$watchdog_pid" 2>/dev/null
 set -e
 
-kimi_status="${kimi_pipe[0]}"
-jq_status="${kimi_pipe[1]}"
+# A watchdog kill surfaces as a signal status (128+n). Report it as this shim's
+# failure rather than as a mysterious agent crash.
+if [[ "$kimi_status" -gt 128 ]]; then
+    echo "agent-kimi.sh: kimi was stopped after ${IDLE_TIMEOUT}s of silence." >&2
+fi
 
 status=0
 if [[ "$kimi_status" -ne 0 ]]; then

@@ -151,6 +151,52 @@ check_eq "passthrough: claude exit status propagates" "7" "$status"
 
 # --- report -----------------------------------------------------------------
 
+# --- a stalled kimi fails the stage instead of parking it ------------------
+#
+# kimi talks to a remote API; a socket can go established but silent and the
+# process then sits in a read at 0% CPU. The shim strips --max-turns and
+# --max-budget-usd because kimi does not accept them, so nothing else in the
+# pipeline can bound that.
+
+cat > "$TMP/stall" <<'EOF'
+#!/usr/bin/env bash
+echo '{"role":"assistant","content":"working"}'
+sleep 300
+EOF
+chmod +x "$TMP/stall"
+
+started="$SECONDS"
+status=0
+ARGV_FILE="$TMP/argv" WORKFLOW_KIMI_IDLE_TIMEOUT=5 WORKFLOW_KIMI_CMD="$TMP/stall" \
+    "$SHIM" -p --model kimi --max-turns 200 < /dev/null > "$TMP/stall.out" 2>/dev/null || status=$?
+elapsed=$(( SECONDS - started ))
+
+COUNT=$((COUNT + 1))
+if [[ "$elapsed" -gt 60 ]]; then
+    fail "stall: shim ran ${elapsed}s; the idle guard should have stopped it"
+fi
+
+check_eq "stall: exit status is non-zero" "1" "$([[ "$status" -ne 0 ]] && echo 1 || echo 0)"
+
+result="$(driver_result "$TMP/stall.out")"
+COUNT=$((COUNT + 1))
+if [[ -z "$result" ]]; then
+    fail "stall: no result event — the driver would hang rather than fail the stage"
+fi
+check_eq "stall: is_error" "true" "$(printf '%s' "$result" | jq -r '.is_error')"
+
+# The output produced before the stall is still rendered, so the log shows how
+# far the stage got.
+check_eq "stall: pre-stall output preserved" "1" \
+    "$(grep -c '"text":"working"' "$TMP/stall.out")"
+
+# Killing only kimi would leave its children holding the fifo open.
+COUNT=$((COUNT + 1))
+if pgrep -f "$TMP/stall" > /dev/null 2>&1; then
+    fail "stall: descendants survived the guard"
+    pkill -f "$TMP/stall" 2>/dev/null
+fi
+
 if [[ "$FAILED" -ne 0 ]]; then
     echo "agent-kimi-test.sh: $FAILED of $COUNT checks failed"
     exit 1

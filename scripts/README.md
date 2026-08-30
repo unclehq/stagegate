@@ -243,8 +243,18 @@ kimi is not flag-compatible with `claude -p`, so the kimi path also moves the
 prompt from stdin to `-p`, drops the claude-only flags, and rewrites kimi's
 event stream into the schema the drivers' `format_claude_stream` renders.
 
+kimi talks to a remote API and a connection can go established but silent; the
+process then sits in a socket read at 0% CPU indefinitely. Because the shim
+drops `--max-turns` and `--max-budget-usd` (kimi does not accept them), nothing
+else in the pipeline bounds that. The shim therefore enforces its own guard on
+*silence* rather than on total runtime — a stage that legitimately runs for
+twenty minutes is fine; one that has emitted nothing for five is not. On firing
+it stops kimi's whole process group and emits an `is_error` result, so the
+driver fails the stage instead of parking on it.
+
 | Variable | Default | Meaning |
 |---|---|---|
+| `WORKFLOW_KIMI_IDLE_TIMEOUT` | `300` | Seconds of no output before kimi is stopped |
 | `WORKFLOW_KIMI_MODEL` | `moonshot-ai/kimi-k2.7-code-highspeed` | Model for a bare `kimi` tier |
 | `WORKFLOW_KIMI_CMD` | `kimi` | kimi binary |
 | `WORKFLOW_CLAUDE_CMD` | `claude` | Binary for the passthrough branch |
